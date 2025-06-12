@@ -10,6 +10,11 @@ from typing import List, Dict, Tuple
 from numpy.typing import NDArray
 
 
+SAMPLING_RATE = 100 # in Hz
+MOUNTING_LOCATION = 'neck'
+SPECIES = 'horse'
+
+
 def get_horse_mapping(path: Path) -> Dict[int, str]:
     mapping: Dict[int, str] = {}
     with open(path / 'subject_mapping.csv', 'r') as f:
@@ -49,6 +54,9 @@ def horse_dataset_to_hdf5(processed_data_path: Path, horse_id: int, dataset_id: 
                           horse_dataset: Dict[str, NDArray]):
     ds_path = processed_data_path / f"horse_{horse_id}_ds_{dataset_id}.hdf5"
     with h5py.File(ds_path, 'w') as f:
+        f.attrs['sr'] = SAMPLING_RATE
+        f.attrs['loc'] = MOUNTING_LOCATION
+        f.attrs['species'] = SPECIES
         for key, data in horse_dataset.items():
             ds = f.create_dataset(key, data.shape, dtype=data.dtype if data.dtype != np.dtypes.ObjectDType else h5py.string_dtype())
             ds[:] = data
