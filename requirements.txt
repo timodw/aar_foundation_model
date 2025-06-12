@@ -5,3 +5,4 @@ pandas
 plotly
 plotly-resampler
 h5py
+anywidget
