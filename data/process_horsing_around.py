@@ -6,6 +6,8 @@ import numpy as np
 import re
 import h5py
 
+from utils import dataset_to_hdf5
+
 from typing import List, Dict, Tuple
 from numpy.typing import NDArray
 
@@ -50,17 +52,7 @@ def load_data_from_horse(
     return loaded_datasets
 
 
-def horse_dataset_to_hdf5(processed_data_path: Path, horse_id: int, dataset_id: int,
-                          horse_dataset: Dict[str, NDArray]):
-    ds_path = processed_data_path / f"horse_{horse_id}_ds_{dataset_id}.hdf5"
-    with h5py.File(ds_path, 'w') as f:
-        f.attrs['sr'] = SAMPLING_RATE
-        f.attrs['loc'] = MOUNTING_LOCATION
-        f.attrs['species'] = SPECIES
-        for key, data in horse_dataset.items():
-            ds = f.create_dataset(key, data.shape, dtype=data.dtype if data.dtype != np.dtypes.ObjectDType else h5py.string_dtype())
-            ds[:] = data
-    return ds_path
+
 
 
 if __name__ == '__main__':
@@ -77,6 +69,6 @@ if __name__ == '__main__':
         loaded_datasets = load_data_from_horse(args.csv_path, horse_id)
         print(f"Loaded {len(loaded_datasets)} datasets for horse {horse_id} ({horse_name}).")
         for dataset_id, ds in enumerate(loaded_datasets):
-            ds_path = horse_dataset_to_hdf5(args.processed_path, horse_id, dataset_id, ds)
+            ds_path = dataset_to_hdf5(args.processed_path, horse_id, dataset_id, ds, SAMPLING_RATE, MOUNTING_LOCATION, SPECIES)
             print(f"Saved dataset {dataset_id} to {ds_path}.")
         print()
