@@ -25,18 +25,43 @@ class LearnablePositionalEncoding(torch.nn.Module):
     def __radd__(self, other: Tensor) -> Tensor:
         return other + self.positional_encoding
 
+
+class ReconstructionHead(torch.nn.Module):
+    
+    def __init__(self, d_embedding: int, patch_size: int):
+        super().__init__()
+        self.weight_matrix = torch.nn.Linear(d_embedding, patch_size, bias=False)
+
+    def forward(self, X: Tensor) -> Tensor:
+        return self.weight_matrix(X)
+
+
+class SelfSupervisedBackbone(torch.nn.Module):
+
+    def __init__(self, transformer: torch.nn.Module, self_supervised_head: torch.nn.Module):
+        super().__init__()
+        self.transformer = transformer
+        self.self_supervised_head = self_supervised_head
+
+    def forward(self, X: Tensor) -> Tensor:
+        z: Tensor = self.transformer(X)
+        X_hat: Tensor = self.self_supervised_head(z)
+        return X_hat
+
+
 class PatchedTransformerEncoderStack(torch.nn.Module):
 
-    def __init__(self, n_patches: int, n_modalities: int, d_embedding=128, n_layers=4, transformer_dropout=0.1):
+    def __init__(self, n_patches: int, patch_size: int, n_modalities: int, d_embedding=128, n_layers=4, transformer_dropout=0.1):
         super().__init__()
 
         self.n_heads = d_embedding // 64
         self.d_feedforward = d_embedding * 4
         self.n_patches = n_patches
+        self.patch_size = patch_size
         self.n_modalities = n_modalities
         self.d_embedding = d_embedding
 
-        self.embedding = LinearEmbedding(self.n_modalities, self.d_embedding)
+        self.embedding = LinearEmbedding(self.patch_size, self.d_embedding)
         self.positional_encoding = LearnablePositionalEncoding(self.n_patches, self.d_embedding)
 
         encoder_layer = torch.nn.TransformerEncoderLayer(
@@ -73,8 +98,10 @@ class PatchedTransformerEncoderStack(torch.nn.Module):
         return z
 
 if __name__ == '__main__':
-    model = PatchedTransformerEncoderStack(32, 32)
-    print(model)
+    transformer = PatchedTransformerEncoderStack(n_patches=32, patch_size=32, n_modalities=3)
+    reconstruction_head = ReconstructionHead(d_embedding=128, patch_size=32)
+    self_supervised_model = SelfSupervisedBackbone(transformer=transformer, self_supervised_head=reconstruction_head)
+    print(self_supervised_model)
 
     X = torch.empty(64, 3, 32, 32)
-    print(model(X).shape)
+    print(self_supervised_model(X).shape)
