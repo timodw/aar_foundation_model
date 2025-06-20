@@ -3,9 +3,11 @@ from pathlib import Path
 import numpy as np
 import argparse
 from collections import defaultdict
+from sklearn.model_selection import train_test_split
 import re
 
 from typing import List, Dict, Set
+from numpy.typing import NDArray
 
 
 PRETRAINING_DATASETS = ['idlab_foaling_2019', 'waves_equine_activities']
@@ -33,6 +35,30 @@ def get_length_for_dataset(paths_list: List[List[Path]]) -> float:
     return total_seconds
 
 
+def hdf5_to_ndarray_segmentation(hdf5_paths: List[List[Path]], max_total_duration: int,
+                                 segment_duration: float, max_window_length: int) -> NDArray:
+    selected_segments: List[NDArray] = []
+    rng = np.random.default_rng()
+    n_individuals = len(training_paths)
+    n_segments_per_individual = int((max_total_duration / segment_duration) / (n_individuals))
+    for record_paths in training_paths:
+        n_segments_per_record = n_segments_per_individual // len(record_paths)
+        for record_path in record_paths:
+            with h5py.File(record_path, 'r') as f:
+                sr = int(f.attrs['sr'])
+                acc_columns = list(filter(lambda e: e.startswith('acc'), f.keys()))
+                record_length = len(f[acc_columns[0]])
+                segment_n_samples = int(segment_duration * sr)
+                segment_start_indices = rng.choice(record_length - segment_n_samples, n_segments_per_record)
+                for start_i in segment_start_indices:
+                    column_name = rng.choice(acc_columns)
+                    seg = f[column_name][start_i:start_i + segment_n_samples]
+                    if seg.shape[0] < max_window_length:
+                        seg = np.pad(seg, ((0, max_window_length - seg.shape[0]), (0, 0)), mode='constant', constant_values=np.nan)
+                    selected_segments.append(seg)
+    return np.stack(selected_segments)
+                
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_root', default='/data/IDLab/aar_foundation_models/processed_data', type=Path)
@@ -40,6 +66,7 @@ if __name__ == '__main__':
     parser.add_argument('--max_dataset_imbalance', default=10., type=float)
     parser.add_argument('--segment_duration', default=10., type=float)
     parser.add_argument('--max_window_length', default=1000, type=int)
+    parser.add_argument('--random_seed', default=578, type=int)
     args = parser.parse_args()
 
     # Get total length of each dataset T (Dict[str, List[List[Path]]])
@@ -59,3 +86,16 @@ if __name__ == '__main__':
     max_duration: float = min(dataset_lengths) * args.max_dataset_imbalance
     print(f"Max duration per dataset: {int(max_duration):,} seconds", end='\n\n')
     
+    training_paths_per_ds: Dict[str, List[Path]] = {}
+    validation_paths_per_ds: Dict[str, List[Path]] = {}
+    for ds_name, paths in pretraining_paths_per_ds.items():
+        training_paths, validation_paths = train_test_split(paths, train_size=.5, random_state=args.random_seed)
+        training_paths_per_ds[ds_name] = training_paths
+        validation_paths_per_ds[ds_name] = validation_paths
+
+    X_train = hdf5_to_ndarray_segmentation(
+        training_paths_per_ds['idlab_foaling_2019'],
+        max_total_duration=max_duration,
+        segment_duration=args.segment_duration,
+        max_window_length=args.max_window_length
+    )
