@@ -52,9 +52,6 @@ def load_data_from_horse(
     return loaded_datasets
 
 
-
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--csv_path', default='/data/IDLab/horse_data/HorsingAround/data/csv', type=Path)
