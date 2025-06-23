@@ -35,12 +35,12 @@ def get_length_for_dataset(paths_list: List[List[Path]]) -> float:
     return total_seconds
 
 
-def hdf5_to_ndarray_segmentation(hdf5_paths: List[List[Path]], max_total_duration: int,
-                                 segment_duration: float, max_window_length: int) -> NDArray:
-    selected_segments: List[NDArray] = []
+def hdf5_to_ndarray_segmentation(hdf5_paths: List[List[Path]], total_duration: int,
+                                 segment_duration: float, max_window_length: int, shuffle=True) -> NDArray:
     rng = np.random.default_rng()
+    selected_segments: List[NDArray] = []
     n_individuals = len(training_paths)
-    n_segments_per_individual = int((max_total_duration / segment_duration) / (n_individuals))
+    n_segments_per_individual = int((total_duration / segment_duration) / (n_individuals))
     for record_paths in training_paths:
         n_segments_per_record = n_segments_per_individual // len(record_paths)
         for record_path in record_paths:
@@ -51,51 +51,75 @@ def hdf5_to_ndarray_segmentation(hdf5_paths: List[List[Path]], max_total_duratio
                 segment_n_samples = int(segment_duration * sr)
                 segment_start_indices = rng.choice(record_length - segment_n_samples, n_segments_per_record)
                 for start_i in segment_start_indices:
-                    column_name = rng.choice(acc_columns)
-                    seg = f[column_name][start_i:start_i + segment_n_samples]
-                    if seg.shape[0] < max_window_length:
-                        seg = np.pad(seg, ((0, max_window_length - seg.shape[0]), (0, 0)), mode='constant', constant_values=np.nan)
-                    selected_segments.append(seg)
-    return np.stack(selected_segments)
+                    for column_name in acc_columns:
+                        seg = f[column_name][start_i:start_i + segment_n_samples]
+                        if seg.shape[0] < max_window_length:
+                            seg = np.pad(seg, ((0, max_window_length - seg.shape[0]), (0, 0)), mode='constant', constant_values=np.nan)
+                        selected_segments.append(seg)
+    X_stacked = np.stack(selected_segments)
+    if shuffle:
+        rng.shuffle(X_stacked)
+    return X_stacked
                 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_root', default='/data/IDLab/aar_foundation_models/processed_data', type=Path)
+    parser.add_argument('--output_folder', default='/data/IDLab/aar_foundation_models/training_snapshots/pretraining', type=Path)
     parser.add_argument('--train_ratio', default=.5, type=float)
-    parser.add_argument('--max_dataset_imbalance', default=10., type=float)
+    parser.add_argument('--max_dataset_imbalance', default=4., type=float)
+    parser.add_argument('--oversampling_factor', default=5., type=float)
     parser.add_argument('--segment_duration', default=10., type=float)
     parser.add_argument('--max_window_length', default=1000, type=int)
     parser.add_argument('--random_seed', default=578, type=int)
     args = parser.parse_args()
 
-    # Get total length of each dataset T (Dict[str, List[List[Path]]])
-    # Calculate max allowed length for each dataset based on the ratio
-    # Divide each dataset's individuals according to train ratio
-    # Add random datasets from the individuals population until max length is reached
-
     pretraining_paths_per_ds: Dict[str, List[List[Path]]] = {}
-    dataset_lengths: List[float] = []
+    dataset_lengths: Dict[str, float] = {}
     for ds_name in PRETRAINING_DATASETS:
         paths_for_dataset = get_all_individual_paths_for_dataset(args.data_root / ds_name)
         pretraining_paths_per_ds[ds_name] = paths_for_dataset
         ds_length = get_length_for_dataset(paths_for_dataset)
-        dataset_lengths.append(ds_length)
+        dataset_lengths[ds_name] = ds_length
         print(f"Dataset '{ds_name}: {len(paths_for_dataset)} individuals ({int(ds_length):,} seconds).'")
 
-    max_duration: float = min(dataset_lengths) * args.max_dataset_imbalance
+    max_duration: float = min(dataset_lengths.values()) * args.oversampling_factor * args.max_dataset_imbalance
     print(f"Max duration per dataset: {int(max_duration):,} seconds", end='\n\n')
-    
-    training_paths_per_ds: Dict[str, List[Path]] = {}
-    validation_paths_per_ds: Dict[str, List[Path]] = {}
-    for ds_name, paths in pretraining_paths_per_ds.items():
-        training_paths, validation_paths = train_test_split(paths, train_size=.5, random_state=args.random_seed)
-        training_paths_per_ds[ds_name] = training_paths
-        validation_paths_per_ds[ds_name] = validation_paths
 
-    X_train = hdf5_to_ndarray_segmentation(
-        training_paths_per_ds['idlab_foaling_2019'],
-        max_total_duration=max_duration,
-        segment_duration=args.segment_duration,
-        max_window_length=args.max_window_length
-    )
+    training_arrays: List[NDArray] = []
+    validation_arrays: List[NDArray] = []
+    for ds_name in PRETRAINING_DATASETS:
+        training_paths, validation_paths = train_test_split(pretraining_paths_per_ds[ds_name],
+                                                            train_size=args.train_ratio, random_state=args.random_seed)
+
+        X_train = hdf5_to_ndarray_segmentation(
+            training_paths,
+            total_duration=min(dataset_lengths[ds_name] * args.oversampling_factor, max_duration),
+            segment_duration=args.segment_duration,
+            max_window_length=args.max_window_length
+        )
+        print(f"Dataset '{ds_name}': loaded {len(X_train)} training segments.")
+
+        X_val = hdf5_to_ndarray_segmentation(
+            validation_paths,
+            total_duration=min(dataset_lengths[ds_name] * args.oversampling_factor, max_duration),
+            segment_duration=args.segment_duration,
+            max_window_length=args.max_window_length
+        )
+        print(f"Dataset '{ds_name}': loaded {len(X_val)} validation segments.")
+
+        training_arrays.append(X_train)
+        validation_arrays.append(X_val)
+    # At which phase should the data be normalized/standardized?
+    rng = np.random.default_rng(seed=args.random_seed)
+    X_train_total = np.concat(training_arrays, axis=0)
+    rng.shuffle(X_train_total)
+
+    X_val_total = np.concat(validation_arrays, axis=0)
+    rng.shuffle(X_val_total)
+
+    print(f"\nTotal pretraining dataset: {len(X_train_total)} training segments, {len(X_val_total)} validation segments.")
+
+    args.output_folder.mkdir(parents=True, exist_ok=True)
+    np.save(args.output_folder / 'X_train.npy', X_train_total)
+    np.save(args.output_folder / 'X_val.npy', X_val_total)

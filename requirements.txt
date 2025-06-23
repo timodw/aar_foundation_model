@@ -7,3 +7,5 @@ plotly-resampler
 h5py
 anywidget
 scikit-learn
+tensorboard
+tqdm
