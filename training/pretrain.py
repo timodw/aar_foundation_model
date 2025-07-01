@@ -14,66 +14,10 @@ import matplotlib.pyplot as plt
 import json
 
 from models.transformer import PatchedTransformerEncoderStack, ReconstructionHead, SelfSupervisedBackbone
-
-class NoamOpt:
-    
-    def __init__(self, d_embedding, factor, warmup, optimizer):
-        self.d_embedding =d_embedding 
-        self.factor = factor
-        self.warmup = warmup
-        self.optimizer = optimizer
-        self._step = 0
-        self._rate = 0
-
-    @property
-    def param_groups(self):
-        return self.optimizer.param_groups
-
-    def step(self):
-        self._step += 1
-        rate = self.rate()
-        for p in self.optimizer.param_groups:
-            p['lr'] = rate
-        self._rate = rate
-        self.optimizer.step()
-
-    def rate(self, step = None):
-        if step is None:
-            step = self._step
-        if step == 0:
-            return 0
-        return self.factor * (self.d_embedding ** (-0.5) * min(step ** (-0.5), step * self.warmup ** (-1.5)))
-
-    def zero_grad(self):
-        self.optimizer.zero_grad()
+from utils import patchify, unpatchify, NoamOpt, get_mask
 
 
-def patchify(X, n_patches):
-    # X: (batch_size, n_modalities, sequence_length)
-    patch_size = X.shape[-1] // n_patches
-    return X.view(X.shape[0], X.shape[1], n_patches, patch_size)
-
-
-def unpatchify(X_patched):
-    # X_patched: (n_modalities, n_patches, patch_size)
-    n_modalities, n_patches, patch_size = X_patched.shape
-    return X_patched.reshape(n_modalities, n_patches * patch_size)
-
-
-def get_mask(shape, masking_ratio, device):
-    # shape: (batch_size, n_modalities, n_patches)
-    len_keep = int(shape[2] * (1 - masking_ratio))
-    noise = torch.rand(shape, device=device)
-    ids_shuffle = torch.argsort(noise, dim=2)
-    ids_restore = torch.argsort(ids_shuffle, dim=2)
-    ids_keep = ids_shuffle[:, :, :len_keep]
-    mask = torch.ones(shape, device=device)
-    mask[:, :, :len_keep] = 0
-    mask = torch.gather(mask, dim=2, index=ids_restore)
-    return mask.bool()
-
-
-def train_epoch(model, dataloader, optimizer, device, masking_ratio, n_patches, loss_mode):
+def train_epoch(model, dataloader, optimizer, device, masking_ratio, n_patches, unmasked_loss_weight):
     model.train()
     total_loss = 0
     for X_batch in tqdm(dataloader, desc="Training"):
@@ -90,20 +34,27 @@ def train_epoch(model, dataloader, optimizer, device, masking_ratio, n_patches, 
 
         optimizer.zero_grad()
         X_hat = model(X_masked)
-        if loss_mode == 'masked':
-            loss = torch.nn.functional.mse_loss(X_hat[mask], X_patched[mask]) # Calculate loss only on masked patches
-        else:
-            loss = torch.nn.functional.mse_loss(X_hat, X_patched)
         
-        loss.backward()
-        optimizer.step()
+        loss = 0
+        # Loss on masked patches
+        if torch.any(mask):
+            loss_masked = torch.nn.functional.mse_loss(X_hat[mask], X_patched[mask])
+            loss += loss_masked
+
+        # Loss on unmasked patches
+        if unmasked_loss_weight > 0 and torch.any(~mask):
+            loss_unmasked = torch.nn.functional.mse_loss(X_hat[~mask], X_patched[~mask])
+            loss += unmasked_loss_weight * loss_unmasked
         
-        total_loss += loss.item()
+        if isinstance(loss, torch.Tensor):
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
         
-    return total_loss / len(dataloader)
+    return total_loss / len(dataloader) if len(dataloader) > 0 else 0
 
 
-def validate_epoch(model, dataloader, device, masking_ratio, n_patches, loss_mode):
+def validate_epoch(model, dataloader, device, masking_ratio, n_patches, unmasked_loss_weight):
     model.eval()
     total_loss = 0
     with torch.no_grad():
@@ -119,14 +70,21 @@ def validate_epoch(model, dataloader, device, masking_ratio, n_patches, loss_mod
             
             X_hat = model(X_masked)
             
-            if loss_mode == 'masked':
-                loss = torch.nn.functional.mse_loss(X_hat[mask], X_patched[mask])
-            else:
-                loss = torch.nn.functional.mse_loss(X_hat, X_patched)
+            loss = 0
+            # Loss on masked patches
+            if torch.any(mask):
+                loss_masked = torch.nn.functional.mse_loss(X_hat[mask], X_patched[mask])
+                loss += loss_masked
+
+            # Loss on unmasked patches
+            if unmasked_loss_weight > 0 and torch.any(~mask):
+                loss_unmasked = torch.nn.functional.mse_loss(X_hat[~mask], X_patched[~mask])
+                loss += unmasked_loss_weight * loss_unmasked
             
-            total_loss += loss.item()
+            if isinstance(loss, torch.Tensor):
+                total_loss += loss.item()
             
-    return total_loss / len(dataloader)
+    return total_loss / len(dataloader) if len(dataloader) > 0 else 0
 
 
 def log_reconstruction_to_tensorboard(writer, model, sample, mask, epoch, n_patches):
@@ -166,7 +124,7 @@ def log_reconstruction_to_tensorboard(writer, model, sample, mask, epoch, n_patc
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Transformer Pre-training Script")
     parser.add_argument('--data_path', type=Path, default='/data/IDLab/aar_foundation_models/training_snapshots/pretraining', help='Path to the training data')
-    parser.add_argument('--output_dir', type=Path, default='/home/timodw/IDLab/aar_foundation_model/logs', help='Directory for logs and checkpoints')
+    parser.add_argument('--output_dir', type=Path, default='/home/timodw/IDLab/aar_foundation_model/logs/pretraining', help='Directory for logs and checkpoints')
     parser.add_argument('--batch_size', type=int, default=512, help='Training batch size')
     parser.add_argument('--epochs', type=int, default=200, help='Number of training epochs')
     parser.add_argument('--d_embedding', type=int, default=128, help='Embedding dimension')
@@ -177,7 +135,7 @@ if __name__ == '__main__':
     parser.add_argument('--warmup_steps', type=int, default=4000, help='Warmup steps for Noam scheduler')
     parser.add_argument('--noam_factor', type=float, default=1.0, help='Factor for Noam scheduler')
     parser.add_argument('--input_mode', type=str, default='multi', choices=['multi', 'single'], help='Input mode: multi-modality or single-modality')
-    parser.add_argument('--loss_mode', type=str, default='masked', choices=['masked', 'full'], help='Loss calculation mode')
+    parser.add_argument('--unmasked_loss_weight', type=float, default=0.0, help='Weight for the unmasked part of the loss (0.0 to 1.0)')
     args = parser.parse_args()
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -248,8 +206,8 @@ if __name__ == '__main__':
     writer = SummaryWriter(log_dir=log_dir)
 
     for epoch in range(args.epochs):
-        train_loss = train_epoch(model, train_loader, optimizer, device, args.masking_ratio, n_patches, args.loss_mode)
-        val_loss = validate_epoch(model, val_loader, device, args.masking_ratio, n_patches, args.loss_mode)
+        train_loss = train_epoch(model, train_loader, optimizer, device, args.masking_ratio, n_patches, args.unmasked_loss_weight)
+        val_loss = validate_epoch(model, val_loader, device, args.masking_ratio, n_patches, args.unmasked_loss_weight)
 
         torch.save(model.state_dict(), model_path)
 

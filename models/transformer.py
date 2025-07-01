@@ -36,6 +36,23 @@ class ReconstructionHead(torch.nn.Module):
         return self.weight_matrix(X)
 
 
+class ClassificationHead(torch.nn.Module):
+
+    def __init__(self, n_modalities: int, d_embedding: int, n_classes: int, dropout: float=0.0):
+        super().__init__()
+        self.layers = torch.nn.Sequential(
+            torch.nn.Flatten(),
+            torch.nn.Dropout(),
+            torch.nn.Linear(n_modalities * d_embedding, n_classes)
+        )
+
+    def forward(self, X: Tensor) -> Tensor:
+        # X: (B, n_modalities, d_embedding, n_patches)
+        # out: (B, n_classes)
+        X = X[:, :, -1, :] # Use last embedding as input for classification, alternative could be to use AveragePool
+        return self.layers(X)
+
+
 class SelfSupervisedBackbone(torch.nn.Module):
 
     def __init__(self, transformer: torch.nn.Module, self_supervised_head: torch.nn.Module):
