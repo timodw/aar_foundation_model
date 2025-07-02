@@ -1,47 +1,25 @@
 import argparse
 import json
 from pathlib import Path
-import numpy as np
-import torch
-from torch.utils.data import DataLoader, TensorDataset
-from sklearn.preprocessing import LabelEncoder
-from datetime import datetime
 import sys
+import torch
 import torch.optim as optim
 import torch.nn as nn
-from torch.utils.tensorboard import SummaryWriter
-from sklearn.metrics import accuracy_score, balanced_accuracy_score
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from models.cnn import CNN
-from utils import subsample_per_class
+from training.utils import (
+    apply_label_mapping,
+    load_finetuning_data,
+    prepare_dataloaders,
+    save_config,
+    setup_logging,
+    subsample_per_class,
+    train_epoch,
+    validate_epoch,
+)
 
-
-def load_data(data_path: Path, fold: int):
-    fold_dir = data_path / f'fold_{fold}'
-    X_train = np.load(fold_dir / 'X_train.npy')
-    y_train = np.load(fold_dir / 'y_train.npy', allow_pickle=True)
-    X_val = np.load(fold_dir / 'X_val.npy')
-    y_val = np.load(fold_dir / 'y_val.npy', allow_pickle=True)
-
-    X_train = np.swapaxes(X_train, 1, 2)
-    y_train = np.array([l.decode('utf-8') for l in y_train])
-    X_val = np.swapaxes(X_val, 1, 2)
-    y_val = np.array([l.decode('utf-8') for l in y_val])
-
-    return X_train, y_train, X_val, y_val
-
-
-def apply_label_mapping(X, y, label_mapping):
-    # Create a mask for samples that have a label in the mapping
-    mask = np.array([label in label_mapping for label in y], dtype=bool)
-    
-    # Filter X and y using the mask
-    X_filtered = X[mask]
-    y_filtered = np.array([label_mapping[label] for label in y[mask]])
-
-    return X_filtered, y_filtered
 
 def main(args):
     # Load mandatory label mapping
@@ -52,7 +30,7 @@ def main(args):
         label_mapping = json.load(f)
 
     # Load data
-    X_train, y_train, X_val, y_val = load_data(args.data_path, args.fold)
+    X_train, y_train, X_val, y_val = load_finetuning_data(args.data_path, args.fold)
 
     # Apply label mapping and filtering
     X_train, y_train = apply_label_mapping(X_train, y_train, label_mapping)
@@ -62,17 +40,8 @@ def main(args):
     if args.max_samples is not None:
         X_train, y_train = subsample_per_class(X_train, y_train, args.max_samples, args.data_path, args.fold)
 
-    # Encode labels
-    label_encoder = LabelEncoder()
-    y_train_encoded = label_encoder.fit_transform(y_train)
-    y_val_encoded = label_encoder.transform(y_val)
-    n_classes = len(label_encoder.classes_)
-
     # Create datasets and dataloaders
-    train_dataset = TensorDataset(torch.from_numpy(X_train).float(), torch.from_numpy(y_train_encoded).long())
-    val_dataset = TensorDataset(torch.from_numpy(X_val).float(), torch.from_numpy(y_val_encoded).long())
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size)
+    train_loader, val_loader, n_classes = prepare_dataloaders(X_train, y_train, X_val, y_val, args.batch_size)
 
     # Model setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -87,16 +56,8 @@ def main(args):
     criterion = nn.CrossEntropyLoss()
 
     # Logging and checkpointing setup
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    log_dir = args.output_dir / args.data_path.name / f"fold_{args.fold}" / timestamp
-    log_dir.mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(log_dir)
-    model_path = log_dir / "model.pt"
-
-    # Save config
-    config_path = log_dir / 'config.json'
-    with open(config_path, 'w') as f:
-        json.dump(vars(args), f, indent=4, default=str)
+    writer, log_dir, model_path = setup_logging(args.output_dir, args.data_path.name, args.fold)
+    save_config(args, log_dir)
 
     print(f"Training CNN on fold {args.fold} of {args.data_path.name}")
     print(f"Number of training samples: {len(X_train)}")
@@ -107,64 +68,26 @@ def main(args):
     # --- Training loop ---
     best_val_loss = float('inf')
     for epoch in range(args.epochs):
-        model.train()
-        total_train_loss = 0
-        all_train_preds = []
-        all_train_labels = []
-        for batch_X, batch_y in train_loader:
-            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+        train_loss, train_acc, train_bal_acc = train_epoch(model, train_loader, optimizer, criterion, device)
+        val_loss, val_acc, val_bal_acc = validate_epoch(model, val_loader, criterion, device)
 
-            optimizer.zero_grad()
-            outputs = model(batch_X)
-            loss = criterion(outputs, batch_y)
-            loss.backward()
-            optimizer.step()
+        writer.add_scalar(f'Loss/train_fold_{args.fold}', train_loss, epoch)
+        writer.add_scalar(f'Accuracy/train_fold_{args.fold}', train_acc, epoch)
+        writer.add_scalar(f'Balanced_Accuracy/train_fold_{args.fold}', train_bal_acc, epoch)
+        writer.add_scalar(f'Loss/val_fold_{args.fold}', val_loss, epoch)
+        writer.add_scalar(f'Accuracy/val_fold_{args.fold}', val_acc, epoch)
+        writer.add_scalar(f'Balanced_Accuracy/val_fold_{args.fold}', val_bal_acc, epoch)
 
-            total_train_loss += loss.item()
-            preds = torch.argmax(outputs, dim=1)
-            all_train_preds.extend(preds.cpu().numpy())
-            all_train_labels.extend(batch_y.cpu().numpy())
-
-        avg_train_loss = total_train_loss / len(train_loader)
-        train_accuracy = accuracy_score(all_train_labels, all_train_preds)
-        train_balanced_accuracy = balanced_accuracy_score(all_train_labels, all_train_preds)
-
-        writer.add_scalar(f'Loss/train_fold_{args.fold}', avg_train_loss, epoch)
-        writer.add_scalar(f'Accuracy/train_fold_{args.fold}', train_accuracy, epoch)
-        writer.add_scalar(f'Balanced_Accuracy/train_fold_{args.fold}', train_balanced_accuracy, epoch)
-
-        # --- Validation loop ---
-        model.eval()
-        total_val_loss = 0
-        all_val_preds = []
-        all_val_labels = []
-        with torch.no_grad():
-            for batch_X, batch_y in val_loader:
-                batch_X, batch_y = batch_X.to(device), batch_y.to(device)
-                outputs = model(batch_X)
-                loss = criterion(outputs, batch_y)
-                total_val_loss += loss.item()
-                preds = torch.argmax(outputs, dim=1)
-                all_val_preds.extend(preds.cpu().numpy())
-                all_val_labels.extend(batch_y.cpu().numpy())
-
-        avg_val_loss = total_val_loss / len(val_loader)
-        val_accuracy = accuracy_score(all_val_labels, all_val_preds)
-        val_balanced_accuracy = balanced_accuracy_score(all_val_labels, all_val_preds)
-
-        writer.add_scalar(f'Loss/val_fold_{args.fold}', avg_val_loss, epoch)
-        writer.add_scalar(f'Accuracy/val_fold_{args.fold}', val_accuracy, epoch)
-        writer.add_scalar(f'Balanced_Accuracy/val_fold_{args.fold}', val_balanced_accuracy, epoch)
-
-        print(f'Epoch {epoch+1}/{args.epochs}, Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.4f}, Train Bal Acc: {train_balanced_accuracy:.4f}, Val Loss: {avg_val_loss:.4f}, Val Acc: {val_accuracy:.4f}, Val Bal Acc: {val_balanced_accuracy:.4f}')
+        print(f'Epoch {epoch+1}/{args.epochs}, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Train Bal Acc: {train_bal_acc:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, Val Bal Acc: {val_bal_acc:.4f}')
 
         # --- Save best model ---
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             torch.save(model.state_dict(), model_path)
 
     writer.close()
     print('Training complete.')
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Training script for the CNN model")

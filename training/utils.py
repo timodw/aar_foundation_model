@@ -1,6 +1,12 @@
 import torch
 import numpy as np
 from pathlib import Path
+from sklearn.preprocessing import LabelEncoder
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.metrics import accuracy_score, balanced_accuracy_score
+import json
+from datetime import datetime
+from torch.utils.tensorboard import SummaryWriter
 
 
 class NoamOpt:
@@ -84,3 +90,117 @@ def subsample_per_class(X, y, max_samples, data_path, fold):
         print(f"Saved subsample indices to {indices_path}")
 
     return X[indices], y[indices]
+
+
+def load_finetuning_data(data_path: Path, fold: int):
+    fold_dir = data_path / f'fold_{fold}'
+    X_train = np.load(fold_dir / 'X_train.npy')
+    y_train = np.load(fold_dir / 'y_train.npy', allow_pickle=True)
+    X_val = np.load(fold_dir / 'X_val.npy')
+    y_val = np.load(fold_dir / 'y_val.npy', allow_pickle=True)
+
+    X_train = np.swapaxes(X_train, 1, 2)
+    y_train = np.array([l.decode('utf-8') for l in y_train])
+    X_val = np.swapaxes(X_val, 1, 2)
+    y_val = np.array([l.decode('utf-8') for l in y_val])
+
+    return X_train, y_train, X_val, y_val
+
+
+def apply_label_mapping(X, y, label_mapping):
+    mask = np.zeros_like(y, dtype=bool)
+    for i, l in enumerate(y):
+        if l in label_mapping:
+            mask[i] = True
+    
+    X_filtered = X[mask]
+    y_filtered = np.array([label_mapping[l] for l in y[mask]])
+
+    return X_filtered, y_filtered
+
+
+def prepare_dataloaders(X_train, y_train, X_val, y_val, batch_size):
+    label_encoder = LabelEncoder()
+    y_train_encoded = label_encoder.fit_transform(y_train)
+    y_val_encoded = label_encoder.transform(y_val)
+    n_classes = len(label_encoder.classes_)
+
+    train_dataset = TensorDataset(torch.from_numpy(X_train).float(), torch.from_numpy(y_train_encoded).long())
+    val_dataset = TensorDataset(torch.from_numpy(X_val).float(), torch.from_numpy(y_val_encoded).long())
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size)
+    
+    return train_loader, val_loader, n_classes
+
+
+def setup_logging(output_dir, data_path_name, fold):
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    log_dir = output_dir / data_path_name / f"fold_{fold}" / timestamp
+    log_dir.mkdir(parents=True, exist_ok=True)
+    writer = SummaryWriter(log_dir)
+    model_path = log_dir / "model.pt"
+    return writer, log_dir, model_path
+
+
+def save_config(args, log_dir):
+    config_path = log_dir / 'config.json'
+    with open(config_path, 'w') as f:
+        json.dump(vars(args), f, indent=4, default=str)
+
+
+def train_epoch(model, dataloader, optimizer, criterion, device, patchify_func=None, n_patches=None):
+    model.train()
+    total_loss = 0
+    all_preds = []
+    all_labels = []
+
+    for batch_X, batch_y in dataloader:
+        batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+
+        if patchify_func:
+            batch_X = patchify_func(batch_X, n_patches)
+
+        optimizer.zero_grad()
+        outputs = model(batch_X)
+        loss = criterion(outputs, batch_y)
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        preds = torch.argmax(outputs, dim=1)
+        all_preds.extend(preds.cpu().numpy())
+        all_labels.extend(batch_y.cpu().numpy())
+
+    avg_loss = total_loss / len(dataloader)
+    accuracy = accuracy_score(all_labels, all_preds)
+    balanced_accuracy = balanced_accuracy_score(all_labels, all_preds)
+
+    return avg_loss, accuracy, balanced_accuracy
+
+
+def validate_epoch(model, dataloader, criterion, device, patchify_func=None, n_patches=None):
+    model.eval()
+    total_loss = 0
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for batch_X, batch_y in dataloader:
+            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+
+            if patchify_func:
+                batch_X = patchify_func(batch_X, n_patches)
+
+            outputs = model(batch_X)
+            loss = criterion(outputs, batch_y)
+            total_loss += loss.item()
+
+            preds = torch.argmax(outputs, dim=1)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(batch_y.cpu().numpy())
+
+    avg_loss = total_loss / len(dataloader)
+    accuracy = accuracy_score(all_labels, all_preds)
+    balanced_accuracy = balanced_accuracy_score(all_labels, all_preds)
+
+    return avg_loss, accuracy, balanced_accuracy

@@ -38,18 +38,23 @@ class ReconstructionHead(torch.nn.Module):
 
 class ClassificationHead(torch.nn.Module):
 
-    def __init__(self, n_modalities: int, d_embedding: int, n_classes: int, dropout: float=0.0):
+    def __init__(self, n_modalities: int, d_embedding: int, n_patches: int, n_classes: int, dropout: float=0.0, avg_pool=False):
         super().__init__()
-        self.layers = torch.nn.Sequential(
+        self.avg_pool = avg_pool
+        layers = [
             torch.nn.Flatten(),
             torch.nn.Dropout(),
             torch.nn.Linear(n_modalities * d_embedding, n_classes)
-        )
+        ]
+        if self.avg_pool:
+            layers.insert(0, torch.nn.AvgPool1d(n_patches))
+        self.layers = torch.nn.Sequential(*layers)
 
     def forward(self, X: Tensor) -> Tensor:
         # X: (B, n_modalities, d_embedding, n_patches)
         # out: (B, n_classes)
-        X = X[:, :, -1, :] # Use last embedding as input for classification, alternative could be to use AveragePool
+        if not self.avg_pool:
+            X = X[:, :, -1, :] # Use last embedding as input for classification
         return self.layers(X)
 
 
@@ -97,20 +102,11 @@ class PatchedTransformerEncoderStack(torch.nn.Module):
         # X: [batch_size, n_modalities, n_patches, patch_size]
         batch_size, n_modalities, n_patches, patch_size = X.shape
 
-        # Apply linear embedding elementwise
-        X_emb = self.embedding(X) # X_emb: [batch_size, n_modalities, n_patches, d_embedding]
-
-        # Apply channel independence
-        X_emb = X_emb.view(batch_size * n_modalities, n_patches, self.d_embedding) # X_emb: [batch_size * n_modalities, n_patches, d_embedding]
-
-        # Apply positional_encoding
-        X_w_pos_enc = X_emb + self.positional_encoding # X_w_pos_enc: [batch_size * n_modalities, n_patches, d_embedding]
-
-        # Pass trough Transformer stack
-        z = self.transformer(X_w_pos_enc) # z: [batch_size * n_modalities, n_patches, d_embedding]
-
-        # Revert to original dimensions
-        z = z.view(batch_size, n_modalities, n_patches, self.d_embedding) # z: [batch_size, n_modalities, n_patches, d_embedding]
+        X_emb = self.embedding(X) # [batch_size, n_modalities, n_patches, d_embedding]
+        X_emb = X_emb.view(batch_size * n_modalities, n_patches, self.d_embedding) # [batch_size * n_modalities, n_patches, d_embedding]
+        X_w_pos_enc = X_emb + self.positional_encoding # [batch_size * n_modalities, n_patches, d_embedding]
+        z = self.transformer(X_w_pos_enc) # [batch_size * n_modalities, n_patches, d_embedding]
+        z = z.view(batch_size, n_modalities, n_patches, self.d_embedding) # [batch_size, n_modalities, n_patches, d_embedding]
 
         return z
 
