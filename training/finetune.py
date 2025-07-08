@@ -76,8 +76,24 @@ def main(args):
     transformer_weights = {k.replace('transformer.', '', 1): v for k, v in pretrained_state_dict.items() if k.startswith('transformer.')}
     transformer.load_state_dict(transformer_weights)
 
+    # # Freeze all layers of the transformer
+    # for param in model[0].parameters():
+    #     param.requires_grad = False
+
+    # # Unfreeze the last transformer encoder layer
+    # for param in model[0].transformer.layers[-1].parameters():
+    #     param.requires_grad = True
+
+    # # Unfreeze the second to last transformer encoder layer
+    # for param in model[0].transformer.layers[-2].parameters():
+    #     param.requires_grad = True
+
+    # # Unfreeze the third to last transformer encoder layer
+    # for param in model[0].transformer.layers[-3].parameters():
+    #     param.requires_grad = True
+
     # Optimizer and Loss Function
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate, weight_decay=args.weight_decay)
     criterion = nn.CrossEntropyLoss()
 
     # Training Loop
