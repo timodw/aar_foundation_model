@@ -45,52 +45,60 @@ def main(args):
     train_loader, val_loader, n_classes = prepare_dataloaders(X_train, y_train, X_val, y_val, args.batch_size)
 
     # Model Initialization
-    with open(args.pretrained_model_path / 'config.json', 'r') as f:
-        pretrained_config = json.load(f)
+    if args.pretrained_model_path:
+        with open(args.pretrained_model_path / 'config.json', 'r') as f:
+            model_config = json.load(f)
+        embedding_type = model_config.get('embedding_type', 'linear')
+        patch_size = model_config['patch_size']
+        d_embedding = model_config['d_embedding']
+        n_layers = model_config['n_layers']
+        transformer_dropout = model_config['transformer_dropout']
+    else:
+        # Use command-line arguments if not loading a pretrained model
+        embedding_type = args.embedding_type
+        patch_size = args.patch_size
+        d_embedding = args.d_embedding
+        n_layers = args.n_layers
+        transformer_dropout = args.transformer_dropout
 
     seq_len = X_train.shape[2]
-    n_patches = seq_len // pretrained_config['patch_size']
+    n_patches = seq_len // patch_size
     n_modalities = X_train.shape[1]
 
     transformer = PatchedTransformerEncoderStack(
         n_patches=n_patches,
-        patch_size=pretrained_config['patch_size'],
+        patch_size=patch_size,
         n_modalities=n_modalities,
-        d_embedding=pretrained_config['d_embedding'],
-        n_layers=pretrained_config['n_layers'],
-        transformer_dropout=pretrained_config['transformer_dropout']
+        d_embedding=d_embedding,
+        n_layers=n_layers,
+        transformer_dropout=transformer_dropout,
+        embedding_type=embedding_type
     ).to(device)
 
     classification_head = ClassificationHead(
         n_modalities=n_modalities,
-        d_embedding=pretrained_config['d_embedding'],
+        d_embedding=d_embedding,
         n_patches=n_patches,
-        n_classes=n_classes
+        n_classes=n_classes,
+        avg_pool=args.avg_pool
     ).to(device)
 
     model = torch.nn.Sequential(transformer, classification_head)
 
-    # Load Pretrained Weights
-    print(f"Loading pretrained weights from: {args.pretrained_model_path}")
-    pretrained_state_dict = torch.load(args.pretrained_model_path / 'model.pt', map_location=device)
-    transformer_weights = {k.replace('transformer.', '', 1): v for k, v in pretrained_state_dict.items() if k.startswith('transformer.')}
-    transformer.load_state_dict(transformer_weights)
+    # Load Pretrained Weights if path is provided
+    if args.pretrained_model_path:
+        print(f"Loading pretrained weights from: {args.pretrained_model_path}")
+        pretrained_state_dict = torch.load(args.pretrained_model_path / 'model.pt', map_location=device)
+        transformer_weights = {k.replace('transformer.', '', 1): v for k, v in pretrained_state_dict.items() if k.startswith('transformer.')}
+        transformer.load_state_dict(transformer_weights, strict=False)
 
-    # # Freeze all layers of the transformer
-    # for param in model[0].parameters():
-    #     param.requires_grad = False
-
-    # # Unfreeze the last transformer encoder layer
-    # for param in model[0].transformer.layers[-1].parameters():
-    #     param.requires_grad = True
-
-    # # Unfreeze the second to last transformer encoder layer
-    # for param in model[0].transformer.layers[-2].parameters():
-    #     param.requires_grad = True
-
-    # # Unfreeze the third to last transformer encoder layer
-    # for param in model[0].transformer.layers[-3].parameters():
-    #     param.requires_grad = True
+        # # Freeze layers only when using a pretrained model
+        # for param in model[0].parameters():
+        #     param.requires_grad = False
+        # for param in model[0].transformer.layers[-1].parameters():
+        #     param.requires_grad = True
+        # for param in model[1].parameters():
+        #     param.requires_grad = True
 
     # Optimizer and Loss Function
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate, weight_decay=args.weight_decay)
@@ -117,7 +125,7 @@ def main(args):
             torch.save(model.state_dict(), model_path)
 
     writer.close()
-    print('Finetuning complete.')
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Finetuning script for the AAR foundation model")
@@ -130,6 +138,14 @@ if __name__ == '__main__':
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=.0, help='Weight decay')
     parser.add_argument('--avg_pool', action='store_true', default=False, help='Use average pooling instead of CLS token')
-    parser.add_argument('--pretrained_model_path', type=Path, required=True, help='Path to pretrained model weights for the transformer')
+    parser.add_argument('--pretrained_model_path', type=Path, default=None, help='Path to pretrained model weights for the transformer')
+    
+    # Add arguments for model architecture, used only if --pretrained_model_path is not provided
+    parser.add_argument('--patch_size', type=int, default=25, help='Size of the patches')
+    parser.add_argument('--d_embedding', type=int, default=128, help='Dimension of the embedding')
+    parser.add_argument('--n_layers', type=int, default=4, help='Number of transformer layers')
+    parser.add_argument('--transformer_dropout', type=float, default=0.1, help='Dropout for the transformer')
+    parser.add_argument('--embedding_type', type=str, default='linear', choices=['linear', 'conv'], help='Type of embedding to use')
+
     args = parser.parse_args()
     main(args)

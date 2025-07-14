@@ -202,5 +202,37 @@ def validate_epoch(model, dataloader, criterion, device, patchify_func=None, n_p
     avg_loss = total_loss / len(dataloader)
     accuracy = accuracy_score(all_labels, all_preds)
     balanced_accuracy = balanced_accuracy_score(all_labels, all_preds)
-
+    
     return avg_loss, accuracy, balanced_accuracy
+
+
+def setup_pretrain_logging(output_dir):
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    log_dir = output_dir / timestamp
+    log_dir.mkdir(parents=True, exist_ok=True)
+    writer = SummaryWriter(log_dir)
+    model_path = log_dir / "model.pt"
+    return writer, log_dir, model_path
+
+
+def load_pretraining_data(data_path: Path, input_mode: str):
+    X_train_path = data_path / 'X_train.npy'
+    X_val_path = data_path / 'X_val.npy'
+    if not X_train_path.exists() or not X_val_path.exists():
+        raise FileNotFoundError(f"Pretraining data not found in {data_path}. Please run data preparation.")
+
+    X_train = np.load(X_train_path)
+    X_val = np.load(X_val_path)
+
+    # Replace NaNs and transpose
+    X_train = np.nan_to_num(X_train, nan=0.0).transpose(0, 2, 1)
+    X_val = np.nan_to_num(X_val, nan=0.0).transpose(0, 2, 1)
+
+    if input_mode == 'single':
+        print("Using single-modality input mode. Reshaping data.")
+        n_train, n_modalities_train, seq_len_train = X_train.shape
+        X_train = X_train.reshape(n_train * n_modalities_train, 1, seq_len_train)
+        n_val, n_modalities_val, seq_len_val = X_val.shape
+        X_val = X_val.reshape(n_val * n_modalities_val, 1, seq_len_val)
+    
+    return X_train, X_val

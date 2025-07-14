@@ -15,6 +15,30 @@ class LinearEmbedding(torch.nn.Module):
         return self.layer(X)
 
 
+class ConvEmbedding(torch.nn.Module):
+
+    def __init__(self, n_features: int, d_embedding: int):
+        super().__init__()
+        self.conv_layers = torch.nn.Sequential(
+            torch.nn.Conv1d(in_channels=1, out_channels=d_embedding // 2, kernel_size=5, stride=2, bias=False),
+            torch.nn.BatchNorm1d(d_embedding // 2),
+            torch.nn.ReLU(),
+            torch.nn.Conv1d(in_channels=d_embedding // 2, out_channels=d_embedding, kernel_size=5, stride=2, bias=False),
+            torch.nn.BatchNorm1d(d_embedding),
+            torch.nn.ReLU(),
+            torch.nn.AdaptiveAvgPool1d(1)
+        )
+
+    def forward(self, X: Tensor) -> Tensor:
+        # X: [batch_size, n_modalities, n_patches, patch_size]
+        batch_size, n_modalities, n_patches, patch_size = X.shape
+        X = X.view(batch_size * n_modalities * n_patches, 1, patch_size)
+        X_emb = self.conv_layers(X) # [batch_size * n_modalities * n_patches, d_embedding, 1]
+        X_emb = X_emb.squeeze(-1) # [batch_size * n_modalities * n_patches, d_embedding]
+        X_emb = X_emb.view(batch_size, n_modalities, n_patches, -1) # [batch_size, n_modalities, n_patches, d_embedding]
+        return X_emb
+
+
 class LearnablePositionalEncoding(torch.nn.Module):
 
     def __init__(self, n_input: int, d_embedding: int):
@@ -73,7 +97,7 @@ class SelfSupervisedBackbone(torch.nn.Module):
 
 class PatchedTransformerEncoderStack(torch.nn.Module):
 
-    def __init__(self, n_patches: int, patch_size: int, n_modalities: int, d_embedding=128, n_layers=4, transformer_dropout=0.1):
+    def __init__(self, n_patches: int, patch_size: int, n_modalities: int, d_embedding=128, n_layers=4, transformer_dropout=0.1, embedding_type='linear'):
         super().__init__()
 
         self.n_heads = d_embedding // 64
@@ -83,7 +107,13 @@ class PatchedTransformerEncoderStack(torch.nn.Module):
         self.n_modalities = n_modalities
         self.d_embedding = d_embedding
 
-        self.embedding = LinearEmbedding(self.patch_size, self.d_embedding)
+        if embedding_type == 'linear':
+            self.embedding = LinearEmbedding(self.patch_size, self.d_embedding)
+        elif embedding_type == 'conv':
+            self.embedding = ConvEmbedding(self.patch_size, self.d_embedding)
+        else:
+            raise ValueError(f"Unknown embedding type: {embedding_type}")
+            
         self.positional_encoding = LearnablePositionalEncoding(self.n_patches, self.d_embedding)
 
         encoder_layer = torch.nn.TransformerEncoderLayer(
@@ -111,7 +141,7 @@ class PatchedTransformerEncoderStack(torch.nn.Module):
         return z
 
 if __name__ == '__main__':
-    transformer = PatchedTransformerEncoderStack(n_patches=32, patch_size=32, n_modalities=3)
+    transformer = PatchedTransformerEncoderStack(n_patches=32, patch_size=32, n_modalities=3, embedding_type='conv')
     reconstruction_head = ReconstructionHead(d_embedding=128, patch_size=32)
     self_supervised_model = SelfSupervisedBackbone(transformer=transformer, self_supervised_head=reconstruction_head)
     print(self_supervised_model)

@@ -86,7 +86,6 @@ def main(args):
             torch.save(model.state_dict(), model_path)
 
     writer.close()
-    print('Training complete.')
 
 
 if __name__ == '__main__':
