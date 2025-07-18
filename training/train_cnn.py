@@ -5,6 +5,8 @@ import sys
 import torch
 import torch.optim as optim
 import torch.nn as nn
+import re
+import numpy as np
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -18,14 +20,15 @@ from training.utils import (
     subsample_per_class,
     train_epoch,
     validate_epoch,
+    print_label_distribution,
 )
 
 
 def main(args):
     # Load mandatory label mapping
-    label_mapping_path = args.data_path / 'label_mapping.json'
+    label_mapping_path = args.data_path / args.label_mapping
     if not label_mapping_path.exists():
-        raise FileNotFoundError(f"Mandatory 'label_mapping.json' not found in {args.data_path}")
+        raise FileNotFoundError(f"Label mapping file '{args.label_mapping}' not found in {args.data_path}")
     with open(label_mapping_path, 'r') as f:
         label_mapping = json.load(f)
 
@@ -38,7 +41,12 @@ def main(args):
 
     # Subsample the training data if max_samples is set
     if args.max_samples is not None:
-        X_train, y_train = subsample_per_class(X_train, y_train, args.max_samples, args.data_path, args.fold)
+        p = re.compile('label_mapping_([A-Za-z0-9_]+)\.json')
+        label_mapping_id = p.search(args.label_mapping).group(1)
+        X_train, y_train = subsample_per_class(X_train, y_train, args.max_samples, args.data_path, args.fold, label_mapping_id)
+
+    # Print label distribution
+    print_label_distribution(y_train)
 
     # Create datasets and dataloaders
     train_loader, val_loader, n_classes = prepare_dataloaders(X_train, y_train, X_val, y_val, args.batch_size)
@@ -92,6 +100,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Training script for the CNN model")
     parser.add_argument('--data_path', type=Path, default='/data/IDLab/aar_foundation_models/training_snapshots/finetuning/horsing_around', help='Path to the finetuning data directory')
     parser.add_argument('--output_dir', type=Path, default='logs/cnn_training', help='Directory for logs and checkpoints')
+    parser.add_argument('--label_mapping', type=str, default='label_mapping_6_classes.json', help='Name of the label mapping json file')
     parser.add_argument('--fold', type=int, default=1, help='Fold to use for training and validation')
     parser.add_argument('--max_samples', type=int, default=50, help='Maximum number of samples to use for training')
     parser.add_argument('--batch_size', type=int, default=32, help='Training batch size')

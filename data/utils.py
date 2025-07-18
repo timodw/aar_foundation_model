@@ -9,7 +9,38 @@ from numpy.typing import NDArray
 
 def dataset_to_hdf5(processed_data_path: Path, individual_id: int, dataset_id: int,
                     dataset: Dict[str, NDArray],
-                    sampling_rate: int, mounting_location: str, species: str):
+                    sampling_rate: int, mounting_location: str, species: str) -> Path:
+    """
+    Converts and stores a contiguous recording of sensor data to an HDF5 file.
+
+    Args:
+        processed_data_path (Path): The path in which the resulting HDF5 file 
+        should be stored. File will be stored as 
+        "{species}_{individual_id}_ds_{dataset_id}.hdf5".
+
+        individual_id (int): The numerical ID identifying the individual animal.
+
+        dataset_id (int): The ID of this specific recording of this specific
+        animal.
+
+        dataset (Dict[str, NDArray]): A dictionary containing a mapping from the
+        name/type of the sensor (i.e. 'acc_left' or 'gyr_0') to the Numpy array
+        containing the sensor data, for accelerometer data the prefix should
+        always be 'acc'. Shape of the sensor data should be (n_samples, n_axes).
+        For labeled data this dictionary should also contain a key 'label'
+        containing the label for each sample.
+
+        sampling_rate (int): The sensor sampling rate used to capture the data 
+        (in Hz).
+
+        mounting_location (str): The location of the sensor (i.e. neck, legs).
+
+        species (str): The species of animal the data was captured
+        from (i.e. horse).
+
+    Returns:
+        Path: The path of the created HDF5 file.
+    """
     ds_path = processed_data_path / f"{species.lower()}_{individual_id}_ds_{dataset_id}.hdf5"
     with h5py.File(ds_path, 'w') as f:
         f.attrs['sr'] = sampling_rate

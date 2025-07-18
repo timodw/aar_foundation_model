@@ -67,8 +67,8 @@ def get_mask(shape, masking_ratio, device):
     return mask.bool()
 
 
-def subsample_per_class(X, y, max_samples, data_path, fold):
-    indices_path = data_path / f'fold_{fold}' / f'subsample_indices_{max_samples}.npy'
+def subsample_per_class(X, y, max_samples, data_path, fold, label_mapping_id):
+    indices_path = data_path / f'fold_{fold}' / f'subsample_indices_{label_mapping_id}_{max_samples}.npy'
     
     if indices_path.exists():
         print(f"Loading existing subsample indices from {indices_path}")
@@ -204,6 +204,14 @@ def validate_epoch(model, dataloader, criterion, device, patchify_func=None, n_p
     balanced_accuracy = balanced_accuracy_score(all_labels, all_preds)
     
     return avg_loss, accuracy, balanced_accuracy
+
+
+def print_label_distribution(y, dataset_name="training"):
+    """Prints the label distribution of a dataset."""
+    unique, counts = np.unique(y, return_counts=True)
+    print(f"Label distribution of the {dataset_name} set:")
+    for label, count in zip(unique, counts):
+        print(f"  - {label}: {count}")
 
 
 def setup_pretrain_logging(output_dir):
