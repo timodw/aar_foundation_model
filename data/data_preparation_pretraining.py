@@ -10,9 +10,6 @@ from typing import List, Dict, Set
 from numpy.typing import NDArray
 
 
-PRETRAINING_DATASETS = ['idlab_foaling_2019', 'waves_equine_activities']
-
-
 def get_all_individual_paths_for_dataset(dataset_root: Path) -> List[List[Path]]:
     paths_dict: Dict[List[Path]] = defaultdict(list)
     for p in dataset_root.glob('*.hdf5'):
@@ -62,38 +59,10 @@ def hdf5_to_ndarray_segmentation(hdf5_paths: List[List[Path]], total_duration: i
     return X_stacked
                 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--data_root', default='/data/IDLab/aar_foundation_models/processed_data',
-                        type=Path,
-                        help='Path of the root folder where the processed datasets are stored.')
-    parser.add_argument('--output_folder', default='/data/IDLab/aar_foundation_models/training_snapshots/pretraining',
-                        type=Path,
-                        help='Path to the folder of where the store the processed pretraining numpy arrays.')
-    parser.add_argument('--datasets', nargs='?', default='idlab_foaling_2019',
-                        type=str,
-                        help='The names of the datasets used for pretraining.')
-    parser.add_argument('--train_ratio', default=.5,
-                        type=float,
-                        help='Percentage of individual animals used for training (Range [0.0, 1.0]).')
-    parser.add_argument('--max_dataset_imbalance', default=4.,
-                        type=float,
-                        help='The maximum imbalance between datasets allowed.')
-    parser.add_argument('--oversampling_factor', default=5.,
-                        type=float,
-                        help='Factor on how many times to oversample each dataset.')
-    parser.add_argument('--segment_duration', default=10.,
-                        type=float,
-                        help='Length in seconds of each extracted segment.')
-    parser.add_argument('--max_window_length', default=1000,
-                        type=int,
-                        help='Maximum length in number of samples for the segments.')
-    parser.add_argument('--random_seed', default=578, type=int)
-    args = parser.parse_args()
-
+def main(args):
     pretraining_paths_per_ds: Dict[str, List[List[Path]]] = {}
     dataset_lengths: Dict[str, float] = {}
-    for ds_name in PRETRAINING_DATASETS:
+    for ds_name in args.datasets:
         paths_for_dataset = get_all_individual_paths_for_dataset(args.data_root / ds_name)
         pretraining_paths_per_ds[ds_name] = paths_for_dataset
         ds_length = get_length_for_dataset(paths_for_dataset)
@@ -105,7 +74,7 @@ if __name__ == '__main__':
 
     training_arrays: List[NDArray] = []
     validation_arrays: List[NDArray] = []
-    for ds_name in PRETRAINING_DATASETS:
+    for ds_name in args.datasets:
         training_paths, validation_paths = train_test_split(pretraining_paths_per_ds[ds_name],
                                                             train_size=args.train_ratio, random_state=args.random_seed)
 
@@ -140,3 +109,35 @@ if __name__ == '__main__':
     args.output_folder.mkdir(parents=True, exist_ok=True)
     np.save(args.output_folder / 'X_train.npy', X_train_total)
     np.save(args.output_folder / 'X_val.npy', X_val_total)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data_root',
+                        type=Path,
+                        help='Path of the root folder where the processed datasets are stored.')
+    parser.add_argument('--output_folder',
+                        type=Path,
+                        help='Path to the folder of where the store the processed pretraining numpy arrays.')
+    parser.add_argument('--datasets', nargs='+',
+                        type=str,
+                        help='The names of the datasets used for pretraining.')
+    parser.add_argument('--train_ratio', default=.5,
+                        type=float,
+                        help='Percentage of individual animals used for training (Range [0.0, 1.0]).')
+    parser.add_argument('--max_dataset_imbalance', default=4.,
+                        type=float,
+                        help='The maximum imbalance between datasets allowed.')
+    parser.add_argument('--oversampling_factor', default=5.,
+                        type=float,
+                        help='Factor on how many times to oversample each dataset.')
+    parser.add_argument('--segment_duration', default=10.,
+                        type=float,
+                        help='Length in seconds of each extracted segment.')
+    parser.add_argument('--max_window_length', default=1000,
+                        type=int,
+                        help='Maximum length in number of samples for the segments.')
+    parser.add_argument('--random_seed', default=578, type=int)
+    args = parser.parse_args()
+
+    main(args)
