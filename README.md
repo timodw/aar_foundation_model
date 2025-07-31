@@ -46,9 +46,11 @@ The base architecture used in the foundation model is a Transformer Encoder only
 n_heads = d_embedding // 64
 d_feedforward = d_embedding * 4
 ```
-To reduce computational complexity patching is used before embedding the input. This means grouping together samples from multiple timesteps and calculating the embedding jointly on these grouped samples. As proposed by the PatchTST paper each axis of the accelerometer data will be passed separately through the Transformer, so the Transformer model will only handle 1D inputs. Our implementation makes use of a learned positional encoding as also proposed by PatchTST and used by the GPT family of models, this learned embedding is initialized using a uniform distribution ***U(-0.02, 0.02)***. For the embedding layer, the model currently supports 2 different methods of calculating the embeddings of the patches: a regular learned linear embedding, which is just a vector-matrix multiplication between the flattened patches and the embedding weight matrix.
+To reduce computational complexity patching is used before embedding the input. This means grouping together samples from multiple timesteps and calculating the embedding jointly on these grouped samples. As proposed by the PatchTST paper each axis of the accelerometer data will be passed separately through the Transformer, so the Transformer model will only handle 1D inputs. Our implementation makes use of a learned positional encoding as also proposed by PatchTST and used by the GPT family of models, this learned embedding is initialized using a uniform distribution ***U(-0.02, 0.02)***. For the embedding layer, the model currently supports 2 different methods of calculating the embeddings of the patches:
+- **Linear**: A regular learned linear embedding, which is just a vector-matrix multiplication between the flattened patches and the embedding weight matrix.
+- **Conv**: A convolutional embedding that makes use of a simple Convolutional Neural Network to calculate the embedding, the implementation details of this network can be found in `models.transformer.ConvEmbedding`.
 
-The Transformer Encoder stack is implemented in `models.PatchedTransformerEncoderStack` and contains several parameters to configure the Transformer Encoder stack. A full list of the parameters is given below:
+The Transformer Encoder stack is implemented in `models.transformer.PatchedTransformerEncoderStack` and contains several parameters to configure the Transformer Encoder stack. A full list of the parameters is given below:
 |Parameter                |Default value|Description|
 |-------------------------|-------------|-----------|
 |`n_patches`              |             |The length of the Transformers context window in number of patches|
@@ -60,4 +62,31 @@ The Transformer Encoder stack is implemented in `models.PatchedTransformerEncode
 `embedding_type`          |'linear'     |The type of embedding used by the stack, can be either `linear` or `conv`.|
 
 ## Self-supervised pretraining
+The model used for this pretraining task is implemented in `models.transformer.SelfSupervisedBackbone`. This takes in an initialized (but not trained) `models.transformer.TransformerEncoderStack` and a self-supervised head. Currently this project only supports self-supervised pretraining through masking, so the only self-supervised head that is currently implemented is a reconstruction head (`models.transformer.ReconstructionHead`). In this method of pretraining a certain percentage of the input patches will be masked (set to zero in our implementation), a reconstruction head is then appended after the Transformer Encoder stack that will reconstruct the masked patches based on the information it can gather from the surrounding non-masked patches. A visual overview of the self-supervised backbone model with the reconstruction head is given below:
 
+![Foundation model masked pre-training architecture](assets/foundation_model_pretraining.png)
+
+The pretraining routine implemented in `training/pretrain.py` largely follows the standard self-supervised masked pretraining as is commonly used in foundation models. However there are some distinct implementation details:
+- **Embedding type**: Our approach supports 2 different embedding types, either a regular linear embedding or a convolution based embedding.
+- **Umasked loss weight**: Our approach also calculates the loss over the non-masked parts, the idea behind this being that it would be forced to look at the entire sequence and learn to reconstruct the entire sequence, not only the masked parts, hopefully learning more meaningful representations in this way. Early experiments showed an unmasked loss weight of 0.0001 to work best.
+- **Multiple axes**: Our approach supports 2 methods of handling time-series data containing multiple axes. In the `multi` mode all axes are combined and passed jointly through the Transformer stack. In the `single` mode each axis is handled as an indepent sample and passed individuallay through the Transformer.
+
+The script used to pretrain the model using the self-supervised masking task can be found at `training/pretrain.py` and contains several CLI parameters to configure the model that will be trained as well as the training itself:
+|Parameter                |Default value|Description|
+|-------------------------|-------------|-----------| 
+|`--data_path`            |             |The path to the folder containing the `X_train.npy` and `X_val.npy` training and evaluation arrays to be used for pretraining.|
+|`--output_dir`           |                  |The path to which the training logs and model weights will be saved, each individual training experiment will generate a distinct timestamped folder containing the logs and weights for this experiment.|
+|`--batch_size`           |512               |The batch size used during training.|
+|`--epochs`               |200               |Epochs used for pretraining, note that there is no early stopping implemented yet.|
+|`--d_embedding`          |128               |Embedding size of the Transformer backbone model.|
+|`--n_layers`             |4                 |Number of layers of the Transformer backbone model.|
+|`--transformer_dropout`  |0.1               |Dropout for the Transformer backbone model.|
+|`--masking_ratio`        |0.5               |The percentage of patches to be zero masked during pretraining.|
+|`--patch_size`           |25                |The size of the patches used by the Transformer backbone.|
+|`--warmup_steps`         |4000              |The number of steps used to warmup the Adam-based NoamOptimizer.|
+|`--noam_factor`          |1.0               |The factor value used by the Adam-based NoamOptimizer.|
+|`--input_mode`           |multi             |Select if you want to pass the 3-axis data as one sample to the Transformer (`multi`) or if you want each axis to be passed as an individual sample (`single`).|
+|`--unmasked_loss_weight` |0.0               |The weight of the reconstruction of the unmasked patches of the input in the loss function.
+|`--embedding_type`       |linear            |Which type of embedding to use, either linear or conv.|
+
+## Fine-tuning for classification

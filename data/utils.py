@@ -92,7 +92,7 @@ def hdf5_to_segments(
     max_window_length: int,
     total_duration: Optional[float] = None,
     shuffle: bool = True,
-    random_seed: int = None
+    random_seed: Optional[int] = None
 ) -> Tuple[NDArray, Optional[NDArray]]:
     """
     Extracts segments from HDF5 files.

@@ -7,11 +7,29 @@ from sklearn.metrics import accuracy_score, balanced_accuracy_score
 import json
 from datetime import datetime
 from torch.utils.tensorboard import SummaryWriter
+from typing import Optional, Tuple, List
+from numpy.typing import NDArray
+from torch import Tensor
 
 
 class NoamOpt:
+    """
+    A wrapper for an optimizer that implements the Noam learning rate schedule,
+    as described in "Attention is All You Need". This is often used for training
+    Transformers.
+    """
     
-    def __init__(self, d_embedding, factor, warmup, optimizer):
+    def __init__(self, d_embedding: int, factor: float, warmup: int, optimizer: torch.optim.Optimizer):
+        """
+        Initializes the NoamOpt scheduler.
+
+        Args:
+            d_embedding (int): The dimensionality of the model's embedding layer.
+                               Used in the learning rate calculation.
+            factor (float): A scaling factor for the learning rate.
+            warmup (int): The number of warmup steps for the learning rate scheduler.
+            optimizer (torch.optim.Optimizer): The optimizer to wrap (e.g., AdamW).
+        """
         self.d_embedding = d_embedding 
         self.factor = factor
         self.warmup = warmup
@@ -21,9 +39,21 @@ class NoamOpt:
 
     @property
     def param_groups(self):
+        """
+        Property to access the parameter groups of the wrapped optimizer.
+
+        Returns:
+            The parameter groups from the optimizer.
+        """
         return self.optimizer.param_groups
 
     def step(self):
+        """
+        Performs a single optimization step, updating the learning rate according
+        to the Noam schedule. Increments the internal step counter and updates
+        the learning rate for all parameter groups before calling the
+        optimizer's step function.
+        """
         self._step += 1
         rate = self.rate()
         for p in self.optimizer.param_groups:
@@ -31,7 +61,17 @@ class NoamOpt:
         self._rate = rate
         self.optimizer.step()
 
-    def rate(self, step = None):
+    def rate(self, step: Optional[int] = None) -> float:
+        """
+        Calculates the learning rate for a given step.
+
+        Args:
+            step (int, optional): The step for which to calculate the rate. If
+                                  None, uses the internal step counter.
+
+        Returns:
+            float: The calculated learning rate.
+        """
         if step is None:
             step = self._step
         if step == 0:
@@ -39,23 +79,66 @@ class NoamOpt:
         return self.factor * (self.d_embedding ** (-0.5) * min(step ** (-0.5), step * self.warmup ** (-1.5)))
 
     def zero_grad(self):
+        """
+        Clears the gradients of all optimized torch.Tensors.
+        """
         self.optimizer.zero_grad()
 
 
-def patchify(X, n_patches):
-    # X: (batch_size, n_modalities, sequence_length)
+def patchify(X: Tensor, n_patches: int) -> Tensor:
+    """
+    Reshapes a batch of sequences into patches.
+
+    This is a common preprocessing step for Vision Transformer-like models
+    applied to time-series data. It divides the sequence into non-overlapping
+    windows (patches).
+
+    Args:
+        X (Tensor): The input tensor of shape (batch_size, n_modalities,
+                    sequence_length).
+        n_patches (int): The number of patches to divide the sequence into.
+
+    Returns:
+        Tensor: The reshaped tensor of shape (batch_size, n_modalities,
+                n_patches, patch_size).
+    """
     patch_size = X.shape[-1] // n_patches
     return X.view(X.shape[0], X.shape[1], n_patches, patch_size)
 
 
-def unpatchify(X_patched):
-    # X_patched: (n_modalities, n_patches, patch_size)
+def unpatchify(X_patched: Tensor) -> Tensor:
+    """
+    Reverses the patchify operation, reconstructing sequences from patches.
+
+    Args:
+        X_patched (Tensor): A tensor of patches with shape (n_modalities,
+                            n_patches, patch_size).
+
+    Returns:
+        Tensor: The reconstructed sequence tensor of shape (n_modalities,
+                sequence_length).
+    """
     n_modalities, n_patches, patch_size = X_patched.shape
     return X_patched.reshape(n_modalities, n_patches * patch_size)
 
 
-def get_mask(shape, masking_ratio, device):
-    # shape: (batch_size, n_modalities, n_patches)
+def get_mask(shape: Tuple[int, int, int], masking_ratio: float, device: torch.device) -> Tensor:
+    """
+    Generates a random boolean mask for masked modeling, a self-supervised
+    learning technique. A certain percentage of patches (masking_ratio) are
+    selected to be masked (True).
+
+    Args:
+        shape (tuple): The shape of the tensor to be masked, typically
+                       (batch_size, n_modalities, n_patches).
+        masking_ratio (float): The fraction of patches to mask (e.g., 0.75 for
+                               75% masking).
+        device (torch.device): The device to create the mask tensor on.
+
+    Returns:
+        Tensor: A boolean tensor of the given shape where True indicates a
+                masked position.
+    """
     len_keep = int(shape[2] * (1 - masking_ratio))
     noise = torch.rand(shape, device=device)
     ids_shuffle = torch.argsort(noise, dim=2)
@@ -67,8 +150,28 @@ def get_mask(shape, masking_ratio, device):
     return mask.bool()
 
 
-def subsample_per_class(X, y, max_samples, data_path, fold, label_mapping_id):
-    indices_path = data_path / f'fold_{fold}' / f'subsample_indices_{label_mapping_id}_{max_samples}.npy'
+def subsample_per_class(X: NDArray, y: NDArray, max_samples: int, data_path: Path, fold: int, label_mapping_id: str) -> Tuple[NDArray, NDArray]:
+    """
+    Subsamples the training data to a maximum number of samples per class.
+
+    To ensure reproducibility, it saves the indices of the subsampled data to a
+    file. If the file already exists, it loads the indices from there instead
+    of
+    generating new ones.
+
+    Args:
+        X (NDArray): The input data features.
+        y (NDArray): The corresponding labels.
+        max_samples (int): The maximum number of samples per class.
+        data_path (Path): The root directory of the dataset.
+        fold (int): The current fold number, used for naming the indices file.
+        label_mapping_id (str): An identifier for the label mapping, used for
+                                naming the indices file.
+
+    Returns:
+        Tuple[NDArray, NDArray]: The subsampled data (X) and labels (y).
+    """
+    indices_path = data_path / f'fold_{fold}' / f'subsample_indices_{max_samples}_{label_mapping_id}.npy'
     
     if indices_path.exists():
         print(f"Loading existing subsample indices from {indices_path}")
@@ -92,7 +195,18 @@ def subsample_per_class(X, y, max_samples, data_path, fold, label_mapping_id):
     return X[indices], y[indices]
 
 
-def load_finetuning_data(data_path: Path, fold: int):
+def load_finetuning_data(data_path: Path, fold: int) -> Tuple[NDArray, NDArray, NDArray, NDArray]:
+    """
+    Loads the training and validation data for a specific fold from .npy files.
+
+    Args:
+        data_path (Path): The directory containing the fold subdirectories.
+        fold (int): The fold number to load data for.
+
+    Returns:
+        Tuple[NDArray, NDArray, NDArray, NDArray]: A tuple containing
+        X_train, y_train, X_val, y_val.
+    """
     fold_dir = data_path / f'fold_{fold}'
     X_train = np.load(fold_dir / 'X_train.npy')
     y_train = np.load(fold_dir / 'y_train.npy', allow_pickle=True)
@@ -107,7 +221,21 @@ def load_finetuning_data(data_path: Path, fold: int):
     return X_train, y_train, X_val, y_val
 
 
-def apply_label_mapping(X, y, label_mapping):
+def apply_label_mapping(X: NDArray, y: NDArray, label_mapping: dict) -> Tuple[NDArray, NDArray]:
+    """
+    Filters the data based on a label mapping and applies the mapping.
+
+    Samples whose labels are not in the mapping are removed. The remaining
+    labels are replaced with the values from the mapping dictionary.
+
+    Args:
+        X (NDArray): The input data features.
+        y (NDArray): The corresponding labels.
+        label_mapping (dict): A dictionary mapping original labels to new labels.
+
+    Returns:
+        Tuple[NDArray, NDArray]: The filtered and mapped data (X) and labels (y).
+    """
     mask = np.zeros_like(y, dtype=bool)
     for i, l in enumerate(y):
         if l in label_mapping:
@@ -119,7 +247,23 @@ def apply_label_mapping(X, y, label_mapping):
     return X_filtered, y_filtered
 
 
-def prepare_dataloaders(X_train, y_train, X_val, y_val, batch_size):
+def prepare_dataloaders(X_train: NDArray, y_train: NDArray, X_val: NDArray, y_val: NDArray, batch_size: int) -> Tuple[DataLoader, DataLoader, int]:
+    """
+    Creates PyTorch DataLoaders for training and validation sets.
+
+    It also encodes the string labels into integer format.
+
+    Args:
+        X_train (NDArray): Training data features.
+        y_train (NDArray): Training data labels.
+        X_val (NDArray): Validation data features.
+        y_val (NDArray): Validation data labels.
+        batch_size (int): The batch size for the DataLoaders.
+
+    Returns:
+        Tuple[DataLoader, DataLoader, int]: A tuple containing the training
+        DataLoader, validation DataLoader, and the number of unique classes.
+    """
     label_encoder = LabelEncoder()
     y_train_encoded = label_encoder.fit_transform(y_train)
     y_val_encoded = label_encoder.transform(y_val)
@@ -133,22 +277,62 @@ def prepare_dataloaders(X_train, y_train, X_val, y_val, batch_size):
     return train_loader, val_loader, n_classes
 
 
-def setup_logging(output_dir, data_path_name, fold):
+def setup_logging(output_dir: Path, data_path_name: str, fold: int) -> Tuple[SummaryWriter, Path, Path]:
+    """
+    Sets up the logging directory for a fine-tuning experiment.
+
+    Creates a timestamped directory within a structure that includes the
+    dataset name and fold number.
+
+    Args:
+        output_dir (Path): The root directory for logs.
+        data_path_name (str): The name of the dataset directory.
+        fold (int): The current fold number.
+
+    Returns:
+        Tuple[SummaryWriter, Path, Path]: A tuple containing the TensorBoard
+        SummaryWriter, the log directory path, and the model checkpoint path.
+    """
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     log_dir = output_dir / data_path_name / f"fold_{fold}" / timestamp
     log_dir.mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(log_dir)
+    writer = SummaryWriter(str(log_dir))
     model_path = log_dir / "model.pt"
     return writer, log_dir, model_path
 
 
-def save_config(args, log_dir):
+def save_config(args: argparse.Namespace, log_dir: Path):
+    """
+    Saves the experiment configuration (command-line arguments) to a JSON file.
+
+    Args:
+        args (argparse.Namespace): The parsed command-line arguments.
+        log_dir (Path): The directory where the config.json file will be saved.
+    """
     config_path = log_dir / 'config.json'
     with open(config_path, 'w') as f:
         json.dump(vars(args), f, indent=4, default=str)
 
 
-def train_epoch(model, dataloader, optimizer, criterion, device, patchify_func=None, n_patches=None):
+def train_epoch(model: torch.nn.Module, dataloader: DataLoader, optimizer: torch.optim.Optimizer, criterion: torch.nn.Module, device: torch.device, patchify_func: Optional[callable] = None, n_patches: Optional[int] = None) -> Tuple[float, float, float]:
+    """
+    Performs one epoch of training for a classification model.
+
+    Args:
+        model (torch.nn.Module): The model to train.
+        dataloader (DataLoader): The DataLoader for the training data.
+        optimizer (torch.optim.Optimizer): The optimizer.
+        criterion (torch.nn.Module): The loss function.
+        device (torch.device): The device to train on.
+        patchify_func (callable, optional): A function to patchify the input data.
+                                            Required for transformer models.
+        n_patches (int, optional): The number of patches. Required if
+                                   patchify_func is provided.
+
+    Returns:
+        Tuple[float, float, float]: The average training loss, accuracy, and
+        balanced accuracy for the epoch.
+    """
     model.train()
     total_loss = 0
     all_preds = []
@@ -178,7 +362,24 @@ def train_epoch(model, dataloader, optimizer, criterion, device, patchify_func=N
     return avg_loss, accuracy, balanced_accuracy
 
 
-def validate_epoch(model, dataloader, criterion, device, patchify_func=None, n_patches=None):
+def validate_epoch(model: torch.nn.Module, dataloader: DataLoader, criterion: torch.nn.Module, device: torch.device, patchify_func: Optional[callable] = None, n_patches: Optional[int] = None) -> Tuple[float, float, float]:
+    """
+    Performs one epoch of validation for a classification model.
+
+    Args:
+        model (torch.nn.Module): The model to validate.
+        dataloader (DataLoader): The DataLoader for the validation data.
+        criterion (torch.nn.Module): The loss function.
+        device (torch.device): The device to run validation on.
+        patchify_func (callable, optional): A function to patchify the input data.
+                                            Required for transformer models.
+        n_patches (int, optional): The number of patches. Required if
+                                   patchify_func is provided.
+
+    Returns:
+        Tuple[float, float, float]: The average validation loss, accuracy, and
+        balanced accuracy for the epoch.
+    """
     model.eval()
     total_loss = 0
     all_preds = []
@@ -206,24 +407,57 @@ def validate_epoch(model, dataloader, criterion, device, patchify_func=None, n_p
     return avg_loss, accuracy, balanced_accuracy
 
 
-def print_label_distribution(y, dataset_name="training"):
-    """Prints the label distribution of a dataset."""
+def print_label_distribution(y: NDArray, dataset_name: str = "training"):
+    """
+    Prints the label distribution of a dataset.
+
+    Args:
+        y (NDArray): An array of labels.
+        dataset_name (str): The name of the dataset (e.g., "training",
+                            "validation") to include in the printout.
+    """
     unique, counts = np.unique(y, return_counts=True)
     print(f"Label distribution of the {dataset_name} set:")
     for label, count in zip(unique, counts):
         print(f"  - {label}: {count}")
 
 
-def setup_pretrain_logging(output_dir):
+def setup_pretrain_logging(output_dir: Path) -> Tuple[SummaryWriter, Path, Path]:
+    """
+    Sets up the logging directory for a pre-training experiment.
+
+    Creates a simple timestamped directory for the logs.
+
+    Args:
+        output_dir (Path): The root directory for logs.
+
+    Returns:
+        Tuple[SummaryWriter, Path, Path]: A tuple containing the TensorBoard
+        SummaryWriter, the log directory path, and the model checkpoint path.
+    """
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     log_dir = output_dir / timestamp
     log_dir.mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(log_dir)
+    writer = SummaryWriter(str(log_dir))
     model_path = log_dir / "model.pt"
     return writer, log_dir, model_path
 
 
-def load_pretraining_data(data_path: Path, input_mode: str):
+def load_pretraining_data(data_path: Path, input_mode: str) -> Tuple[NDArray, NDArray]:
+    """
+    Loads the pre-training data from .npy files.
+
+    Handles NaN values and transposes the data for model consumption. Also
+    reshapes the data for single-modality input if specified.
+
+    Args:
+        data_path (Path): The directory containing X_train.npy and X_val.npy.
+        input_mode (str): The input mode, either 'multi' or 'single'.
+
+    Returns:
+        Tuple[NDArray, NDArray]: A tuple containing the training and validation
+        data arrays (X_train, X_val).
+    """
     X_train_path = data_path / 'X_train.npy'
     X_val_path = data_path / 'X_val.npy'
     if not X_train_path.exists() or not X_val_path.exists():

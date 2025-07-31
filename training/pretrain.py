@@ -169,8 +169,8 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Transformer Pre-training Script")
-    parser.add_argument('--data_path', type=Path, default='/data/IDLab/aar_foundation_models/training_snapshots/pretraining', help='Path to the training data directory')
-    parser.add_argument('--output_dir', type=Path, default='/home/timodw/IDLab/aar_foundation_model/logs/pretraining', help='Directory for logs and checkpoints')
+    parser.add_argument('--data_path', type=Path, help='Path to the training data directory')
+    parser.add_argument('--output_dir', type=Path, help='Directory for logs and checkpoints')
     parser.add_argument('--batch_size', type=int, default=512, help='Training batch size')
     parser.add_argument('--epochs', type=int, default=200, help='Number of training epochs')
     parser.add_argument('--d_embedding', type=int, default=128, help='Embedding dimension')
