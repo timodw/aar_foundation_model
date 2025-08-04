@@ -1,10 +1,12 @@
 import argparse
 import json
+import numpy as np
 from pathlib import Path
 import torch
 import torch.optim as optim
 import torch.nn as nn
 import re
+from sklearn.metrics import accuracy_score, balanced_accuracy_score
 
 import sys
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -19,6 +21,7 @@ from utils import (
     save_config,
     train_epoch,
     validate_epoch,
+    get_predictions,
     patchify,
     print_label_distribution
 )
@@ -41,7 +44,7 @@ def main(args):
     X_val, y_val = apply_label_mapping(X_val, y_val, label_mapping)
 
     if args.max_samples is not None:
-        p = re.compile('label_mapping_([A-Za-z0-9_]+)\.json')
+        p = re.compile(r'label_mapping_([A-Za-z0-9_]+)\.json')
         label_mapping_id = p.search(args.label_mapping).group(1)
         X_train, y_train = subsample_per_class(X_train, y_train, args.max_samples, args.data_path, args.fold, label_mapping_id)
 
@@ -94,13 +97,27 @@ def main(args):
         transformer_weights = {k.replace('transformer.', '', 1): v for k, v in pretrained_state_dict.items() if k.startswith('transformer.')}
         transformer.load_state_dict(transformer_weights, strict=False)
 
-        # # Freeze layers only when using a pretrained model
-        # for param in model[0].parameters():
-        #     param.requires_grad = False
-        # for param in model[0].transformer.layers[-1].parameters():
-        #     param.requires_grad = True
-        # for param in model[1].parameters():
-        #     param.requires_grad = True
+        if args.freeze_backbone:
+            # Freeze all backbone parameters
+            for param in transformer.parameters():
+                param.requires_grad = False
+            print(f"Backbone weights are frozen")
+        elif args.unlocked_layers is not None:
+            # Freeze all backbone parameters first
+            for param in transformer.parameters():
+                param.requires_grad = False
+            
+            # Unlock the specified number of last transformer layers
+            n_layers_to_unlock = min(args.unlocked_layers, args.n_layers)
+            for i in range(args.n_layers - n_layers_to_unlock, args.n_layers):
+                for param in transformer.transformer.layers[i].parameters():
+                    param.requires_grad = True
+            
+            print(f"Unlocked last {n_layers_to_unlock} transformer layers for training")
+        
+        # Classification head is always trainable
+        for param in classification_head.parameters():
+            param.requires_grad = True
 
     # Optimizer and Loss Function
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate, weight_decay=args.weight_decay)
@@ -126,6 +143,18 @@ def main(args):
             best_val_loss = val_loss
             torch.save(model.state_dict(), model_path)
 
+    # Load the best model and get final predictions
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    y_true, y_pred = get_predictions(model, val_loader, device, patchify, n_patches)
+    
+    # Save predictions directly to log directory (same folder as model weights)
+    np.save(log_dir / f"y_true_fold_{args.fold}.npy", y_true)
+    np.save(log_dir / f"y_pred_fold_{args.fold}.npy", y_pred)
+    
+    print(f"Predictions saved to {log_dir}")
+    print(f"Final validation accuracy: {accuracy_score(y_true, y_pred):.4f}")
+    print(f"Final validation balanced accuracy: {balanced_accuracy_score(y_true, y_pred):.4f}")
+
     writer.close()
 
 
@@ -142,6 +171,8 @@ if __name__ == '__main__':
     parser.add_argument('--weight_decay', type=float, default=.0, help='Weight decay')
     parser.add_argument('--avg_pool', action='store_true', default=False, help='Use average pooling instead of CLS token')
     parser.add_argument('--pretrained_model_path', type=Path, default=None, help='Path to pretrained model weights for the transformer')
+    parser.add_argument('--freeze_backbone', action='store_true', default=False, help='Freeze the backbone transformer layers')
+    parser.add_argument('--unlocked_layers', type=int, default=None, help='Number of last transformer layers to unlock for training (mutually exclusive with --freeze_backbone)')
     
     # Add arguments for model architecture, used only if --pretrained_model_path is not provided
     parser.add_argument('--patch_size', type=int, default=25, help='Size of the patches')
@@ -151,4 +182,9 @@ if __name__ == '__main__':
     parser.add_argument('--embedding_type', type=str, default='linear', choices=['linear', 'conv'], help='Type of embedding to use')
 
     args = parser.parse_args()
+    
+    # Validation: ensure freeze_backbone and unlocked_layers are not both set
+    if args.freeze_backbone and args.unlocked_layers is not None:
+        parser.error("--freeze_backbone and --unlocked_layers cannot be used simultaneously")
+    
     main(args)

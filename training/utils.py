@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import argparse
 from pathlib import Path
 from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import DataLoader, TensorDataset
@@ -478,3 +479,39 @@ def load_pretraining_data(data_path: Path, input_mode: str) -> Tuple[NDArray, ND
         X_val = X_val.reshape(n_val * n_modalities_val, 1, seq_len_val)
     
     return X_train, X_val
+
+
+def get_predictions(model: torch.nn.Module, dataloader: DataLoader, device: torch.device, patchify_func: Optional[callable] = None, n_patches: Optional[int] = None) -> Tuple[NDArray, NDArray]:
+    """
+    Gets predictions and true labels from a model on a given dataset.
+    
+    Args:
+        model (torch.nn.Module): The model to get predictions from.
+        dataloader (DataLoader): The DataLoader for the data.
+        device (torch.device): The device to run inference on.
+        patchify_func (callable, optional): A function to patchify the input data.
+                                            Required for transformer models.
+        n_patches (int, optional): The number of patches. Required if
+                                   patchify_func is provided.
+    
+    Returns:
+        Tuple[NDArray, NDArray]: Arrays of true labels and predictions.
+    """
+    model.eval()
+    all_preds = []
+    all_labels = []
+    
+    with torch.no_grad():
+        for batch_X, batch_y in dataloader:
+            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+            
+            if patchify_func:
+                batch_X = patchify_func(batch_X, n_patches)
+            
+            outputs = model(batch_X)
+            preds = torch.argmax(outputs, dim=1)
+            
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(batch_y.cpu().numpy())
+    
+    return np.array(all_labels), np.array(all_preds)

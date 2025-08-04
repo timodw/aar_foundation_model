@@ -3,19 +3,13 @@ from pathlib import Path
 import numpy as np
 from sklearn.model_selection import KFold
 
-from utils import get_all_individual_paths_for_dataset, hdf5_to_segments, individual_has_valid_labels
+from utils import (
+    get_all_individual_paths_for_dataset,
+    hdf5_to_segments,individual_has_valid_labels
+)
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--data_root', default='/data/IDLab/aar_foundation_models/processed_data', type=Path)
-    parser.add_argument('--output_folder', default='/data/IDLab/aar_foundation_models/training_snapshots/finetuning', type=Path)
-    parser.add_argument('--dataset_name', default='horsing_around', type=str)
-    parser.add_argument('--segment_duration', default=10., type=float)
-    parser.add_argument('--max_window_length', default=1000, type=int)
-    parser.add_argument('--n_folds', default=4, type=int)
-    parser.add_argument('--random_seed', default=578, type=int)
-    args = parser.parse_args()
 
+def main(args):
     all_individual_paths = get_all_individual_paths_for_dataset(args.data_root / args.dataset_name)
 
     if not all_individual_paths:
@@ -72,3 +66,18 @@ if __name__ == '__main__':
                     np.save(output_dir / 'y_val.npy', y_val)
 
             print(f'\nSuccessfully generated and saved {args.n_folds}-fold cross-validation datasets.')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data_root', type=Path, help='Path of the root folder where the processed HDF5 datasets are stored.')
+    parser.add_argument('--output_folder', type=Path, help='Path to the folder where to store the processed numpy arrays.')
+    parser.add_argument('--dataset_name', type=str, help='Name of the folder/dataset in --data_root to be used for generating the fine-tuning data.')
+    parser.add_argument('--segment_duration', default=10., type=float)
+    parser.add_argument('--max_window_length', default=1000, type=int)
+    parser.add_argument('--n_folds', default=4, type=int)
+    parser.add_argument('--random_seed', default=578, type=int)
+    args = parser.parse_args()
+
+    main(args)
+    
