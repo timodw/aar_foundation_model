@@ -217,7 +217,7 @@ This script contains the following CLI parameters to configure the data processi
 |`--dataset_name`         |             |Name of the folder/dataset in `--data_root` to be used for generating the fine-tuning data.|
 |`--segment duration`     |10.0         |The duration of each individual segment in the pretraining arrays, in number of seconds.|
 |`--max_window_length`    |1000         |The maximum length of segments in number of accelerometer samples. Segments shorter than the maximum window length will be zero padded until they reach the maximum window length.|
-|`--n_folds`             |4            |The number of folds to generate for the N-fold cross validation.|
+|`--n_folds`              |4            |The number of folds to generate for the N-fold cross validation.|
 |`--random_seed`          |578          |The random seed used to ensure reproducibility.|
 
 An example of how to call this script is given below. This will generate the fine-tuning data for the horses_2022_labeled dataset, using a 4-fold cross-validation split. The segments will be 10 seconds long with a maximum window length of 1000 samples.

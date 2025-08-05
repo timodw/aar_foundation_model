@@ -28,8 +28,6 @@ def get_dataset_paths(path: Path) -> Dict[int, List[Path]]:
     return mapping
 
 
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--csv_path', default='/data/IDLab/foaling_detection/Datasets/foaling_2019/data', type=Path)

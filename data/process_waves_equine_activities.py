@@ -7,7 +7,7 @@ from itertools import chain
 
 from utils import dataset_to_hdf5
 
-from typing import Dict, List, Set
+from typing import Dict, List
 from numpy.typing import NDArray
 
  

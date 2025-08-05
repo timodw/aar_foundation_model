@@ -4,7 +4,6 @@ import csv
 import pandas as pd
 import numpy as np
 import re
-import h5py
 
 from utils import dataset_to_hdf5
 
