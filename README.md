@@ -58,11 +58,33 @@ output_folder
         |-- y_train.npy
         |-- X_val.npy
         `-- y_val.npy
-    `-- fold_3
+    |-- fold_3
         |-- X_train.npy
         |-- y_train.npy
         |-- X_val.npy
         `-- y_val.npy
+    `-- label_mapping.json
+```
+### Label Mapping
+Each dataset used for fine-tuning must contain a `label_mapping.json` file in its root directory (alongside the directories containg the HDF5 files for each fold). This file maps the original labels from the dataset to new labels used for fine-tuning, allowing you to:
+
+- **Group different labels into superclasses**: For example, mapping `"trotting-rider"`, and `"trotting-natural"` to a single `"trotting"` label.
+- **Drop unwanted labels**: Segments with labels that are not in the mapping's keys will be ignored for training.
+
+The file should be structured as a JSON object with original labels as keys and new labels as values:
+
+```json
+{
+    "walking-rider": "walking",
+    "walking-natural": "walking",
+    "trotting-rider": "trotting", 
+    "trotting-natural": "trotting", 
+    "cantering-rider": "cantering",
+    "cantering-natural": "cantering",
+    "standing": "standing",
+    "grazing": "feeding",
+    "eating": "feeding"
+}
 ```
 
 This script contains the following CLI parameters to configure the data processing:
@@ -293,33 +315,63 @@ The model used for this task is `models.transformer.ClassificationModel`, which 
 
 ![Foundation model fine-tuning architecture](assets/foundation_model_finetuning.png)
 
-The fine-tuning routine implemented in `training/finetune_classification.py` has several distinct implementation details:
+The fine-tuning routine implemented in `training/finetune.py` has several distinct implementation details:
 - **Starting from a pre-trained model**: The script first initializes a `TransformerEncoderStack` with the specified architecture and then loads the weights from the file provided via `--pretrained_model_path`. If no path is provided, the model will be trained from scratch.
+- **Label mapping**: Each dataset used for fine-tuning must contain a `label_mapping_{ID}.json` file in its root directory. This file maps the original labels from the dataset to new labels used for fine-tuning, allowing you to group different labels into superclasses (e.g., mapping `"walking-rider"`, and `"walking-natural"` to a single `"walking"` label) or drop unwanted labels by simply excluding them from the mapping. Segments with labels not part of the mapping's keys will be automatically dropped.
+- **Cross-Validation**: The script is designed to work with N-fold cross-validation. The `--fold` parameter specifies which fold to use for training and validation (0 to N-1 for N-fold cross-validation).
+- **Dataset balancing**: The `--max_samples` parameter limits the number of samples per class used for training.
 - **Freezing the backbone**: The `--freeze_backbone` flag allows for freezing the entire pre-trained backbone, making the classification head the only trainable part of the model.
 - **Unlocking specific layers**: The `--unlocked_layers` parameter provides fine-grained control over which parts of the backbone are trained. For example, a value of `1` will only train the final layer of the Transformer backbone, keeping all other layers frozen. If this is not set and `--freeze_backbone` is not passed, the entire backbone is fine-tuned.
 - **Embedding extraction**: The script supports two methods for deriving a single embedding from the Transformer's output sequence for classification. The default method uses the embedding of the last patch. Alternatively, passing the `--avg_pool` flag will apply average pooling over all patch embeddings.
-- **Cross-Validation**: The script is designed to work with N-fold cross-validation. To run a full N-fold experiment, the script must be executed N times, incrementing the `--fold` argument from `0` to `N-1` for each run.
 - **Prediction saving**: After training completes, the script automatically saves the final model predictions on the validation set. Both true labels (`y_true_fold_{fold}.npy`) and predictions (`y_pred_fold_{fold}.npy`) are stored directly in the experiment's log folder alongside the model weights, enabling easy post-training evaluation such as through confusion matrices and per-class metrics.
 
-The script `training/finetune_classification.py` is used for this purpose. It handles loading the pre-trained weights, attaching the classification head, and running the fine-tuning process. The script takes the following CLI parameters:
+### Label Mapping Configuration
+Label mapping files must follow the naming format `label_mapping_{ID}.json` where `{ID}` is a unique string or number identifier. This allows a single dataset to contain multiple label mappings for training on different subsets or groupings of labels. For example, you might have:
+- `label_mapping_5_classes.json` - Groups activities into 5 main categories
+- `label_mapping_movements.json` - Only includes movement-related activities
+
+Each label mapping file should be structured as a JSON object with original labels as keys and new labels as values:
+
+```json
+{
+    "walking-rider": "walking",
+    "walking-natural": "walking",
+    "trotting-rider": "trotting", 
+    "trotting-natural": "trotting", 
+    "cantering-rider": "cantering",
+    "cantering-natural": "cantering",
+    "standing": "standing",
+    "grazing": "feeding",
+    "eating": "feeding"
+}
+```
+
+#### Reproducible Sample Selection
+When using the `--max_samples` parameter to limit the number of samples per class, the system ensures reproducibility by saving the selected sample indices to disk. For each combination of fold number, maximum samples, and label mapping ID, a file named `subsample_indices_{max_samples}_{ID}.npy` is created in the corresponding fold directory (e.g., `fold_0/subsample_indices_400_5classes.npy`). 
+
+On subsequent runs with the same parameters, the system will load these saved indices instead of generating new random selections, ensuring that experiments are perfectly reproducible. This is particularly important when comparing different model configurations or conducting ablation studies, as it guarantees that any performance differences are due to the model changes rather than different training data subsets.
+
+The script `training/finetune.py` is used for this purpose. It handles loading the pre-trained weights, attaching the classification head, and running the fine-tuning process. The script takes the following CLI parameters:
 |Parameter                |Default value|Description|
 |-------------------------|-------------|-----------|
-|`--data_path`            |             |Path to the root folder of the fine-tuning data, which contains the fold subdirectories.|
-|`--output_dir`           |             |Path where the training logs and fine-tuned model weights will be saved.|
-|`--pretrained_model_path`|             |Path to the `.pt` file of the pre-trained model weights. If not provided, the model is trained from scratch.|
-|`--batch_size`           |128          |The batch size used during fine-tuning.|
-|`--epochs`               |50           |Number of epochs for fine-tuning.|
-|`--lr`                   |0.0001       |Learning rate for the AdamW optimizer.|
-|`--d_embedding`          |128          |Embedding size of the Transformer backbone (must match the pre-trained model).|
-|`--n_layers`             |4            |Number of layers of the Transformer backbone (must match the pre-trained model).|
-|`--patch_size`           |25           |The size of the patches (must match the pre-trained model).|
-|`--n_classes`            |             |The number of target classes for the classification task.|
-|`--fold`                 |0            |The specific fold to train on for cross-validation.|
-|`--freeze_backbone`      |False        |If set, freezes the weights of the pre-trained backbone during fine-tuning.|
-|`--unlocked_layers`      |0            |Number of final layers of the backbone to unfreeze for training. `0` means all layers are trainable unless `--freeze_backbone` is set.|
-|`--avg_pool`             |False        |If set, uses average pooling to extract the final embedding for classification instead of using the last patch embedding.|
-|`--input_mode`           |multi        |Input mode (`multi` or `single`), must match the pre-trained model.|
-|`--embedding_type`       |linear       |Embedding type (`linear` or `conv`), must match the pre-trained model.|
+|`--data_path`            |                  |The path to the folder containing the fold directories with the `X_train.npy`, `y_train.npy`, `X_val.npy`, and `y_val.npy` arrays.|
+|`--output_dir`           |                  |The path to which the training logs and model weights will be saved. For each fold a sub-directory will be created.|
+|`--fold`                 |0                 |The fold number to use for training and validation (0 to N-1 for N-fold cross-validation).|
+|`--label_mapping`        |Name of the label mapping JSON file to use from the data directory.|
+|`--max_samples`          |400               |Maximum number of samples per class to use for training.|
+|`--pretrained_model_path`|                  |Path to the `.pt` file of the pretrained model weights to be used for initialization.|
+|`--batch_size`           |32                |The batch size used during training.|
+|`--epochs`               |100               |Epochs used for fine-tuning. Early stopping is used based on the validation loss.|
+|`--learning_rate`        |0.0001            |The learning rate used for fine-tuning.|
+|`--weight_decay`         |0.0               |Weight decay (L2 regularization) applied during training.|
+|`--avg_pool`             |False             |Use average pooling over all patch embeddings instead of using the last patch embedding for classification.|
+|`--freeze_backbone`      |False             |If set to `True`, the weights of the Transformer backbone will be frozen and only the classification head will be trained.|
+|`--unlocked_layers`      |None              |Number of last transformer layers to unlock for training (mutually exclusive with `--freeze_backbone`).|
+|`--d_embedding`          |256               |Embedding size of the Transformer backbone model. Must match the pretrained model.|
+|`--n_layers`             |4                 |Number of layers of the Transformer backbone model. Must match the pretrained model.|
+|`--transformer_dropout`  |0.1               |Dropout for the Transformer backbone model.|
+|`--patch_size`           |25                |The size of the patches used by the Transformer backbone. Must match the pretrained model.|
+|`--embedding_type`       |linear            |Which type of embedding to use, either `linear` or `conv`. Must match the pretrained model.|
 
 An example of how to call this script is given below. This will fine-tune a pre-trained model on the first fold (`--fold 0`) of the `horses_2022_labeled` dataset, which has 8 classes. The architectural parameters (`d_embedding`, `n_layers`, etc.) match the model from the pre-training example. Only the last 2 layers of the Transformer backbone will be fine-tuned.
 

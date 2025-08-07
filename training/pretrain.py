@@ -16,13 +16,29 @@ from utils import (
     unpatchify, 
     NoamOpt, 
     get_mask,
-    setup_pretrain_logging,
+    setup_logging,
     save_config,
+    log_reconstruction_to_tensorboard,
     load_pretraining_data
 )
 
 
 def train_pretrain_epoch(model, dataloader, optimizer, device, masking_ratio, n_patches, unmasked_loss_weight):
+    """
+    Performs one epoch of pretraining using masked reconstruction.
+
+    Args:
+        model: The self-supervised Transformer model to train.
+        dataloader: DataLoader for the training data.
+        optimizer: The optimizer (typically Adam wrapped in a NoamOpt object).
+        device: The device to train on.
+        masking_ratio (float): Fraction of patches to mask.
+        n_patches (int): Number of patches to divide sequences into.
+        unmasked_loss_weight (float): Weight for unmasked reconstruction loss.
+
+    Returns:
+        float: Average training loss for the epoch.
+    """
     model.train()
     total_loss = 0
     for X_batch in tqdm(dataloader, desc="Training"):
@@ -38,6 +54,7 @@ def train_pretrain_epoch(model, dataloader, optimizer, device, masking_ratio, n_
         X_hat = model(X_masked)
         
         loss = 0
+        # Extra checks for when masking ratio is either 0.0 or 1.0
         if torch.any(mask):
             loss += torch.nn.functional.mse_loss(X_hat[mask], X_patched[mask])
         if unmasked_loss_weight > 0 and torch.any(~mask):
@@ -52,6 +69,20 @@ def train_pretrain_epoch(model, dataloader, optimizer, device, masking_ratio, n_
 
 
 def validate_pretrain_epoch(model, dataloader, device, masking_ratio, n_patches, unmasked_loss_weight):
+    """
+    Performs one epoch of validation using masked reconstruction.
+
+    Args:
+        model: The self-supervised Transformer model to validate.
+        dataloader: DataLoader for the validation data.
+        device: The device to run validation on.
+        masking_ratio (float): Fraction of patches to mask.
+        n_patches (int): Number of patches to divide sequences into.
+        unmasked_loss_weight (float): Weight for unmasked reconstruction loss.
+
+    Returns:
+        float: Average validation loss for the epoch.
+    """
     model.eval()
     total_loss = 0
     with torch.no_grad():
@@ -67,6 +98,7 @@ def validate_pretrain_epoch(model, dataloader, device, masking_ratio, n_patches,
             X_hat = model(X_masked)
             
             loss = 0
+            # Extra checks for when masking ratio is either 0.0 or 1.0
             if torch.any(mask):
                 loss += torch.nn.functional.mse_loss(X_hat[mask], X_patched[mask])
             if unmasked_loss_weight > 0 and torch.any(~mask):
@@ -78,36 +110,9 @@ def validate_pretrain_epoch(model, dataloader, device, masking_ratio, n_patches,
     return total_loss / len(dataloader) if len(dataloader) > 0 else 0
 
 
-def log_reconstruction_to_tensorboard(writer, model, sample, mask, epoch, n_patches):
-    model.eval()
-    with torch.no_grad():
-        sample_patched = patchify(sample, n_patches)
-        sample_masked = sample_patched.clone()
-        sample_masked[mask.unsqueeze(-1).expand_as(sample_masked)] = 0
-        reconstruction_patched = model(sample_masked)
-
-        original_signal = unpatchify(sample_patched.squeeze(0))
-        masked_signal = unpatchify(sample_masked.squeeze(0))
-        reconstructed_signal = unpatchify(reconstruction_patched.squeeze(0))
-
-        fig, axes = plt.subplots(original_signal.shape[0], 1, figsize=(15, 5 * original_signal.shape[0]), sharex=True, squeeze=False)
-        axes = axes.flatten()
-        fig.suptitle(f'Epoch {epoch+1} Reconstruction')
-        for i, ax in enumerate(axes):
-            ax.plot(original_signal[i].cpu().numpy(), label='Original')
-            ax.plot(masked_signal[i].cpu().numpy(), label='Masked Input', linestyle='--')
-            ax.plot(reconstructed_signal[i].cpu().numpy(), label='Reconstruction')
-            ax.set_ylabel(f'Modality {i+1}')
-            ax.legend()
-        
-        axes[-1].set_xlabel('Time step')
-        writer.add_figure('Reconstruction', fig, global_step=epoch)
-        plt.close(fig)
-
-
 def main(args):
     # Setup
-    writer, log_dir, model_path = setup_pretrain_logging(args.output_dir)
+    writer, log_dir, model_path = setup_logging(args.output_dir)
     save_config(args, log_dir)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")

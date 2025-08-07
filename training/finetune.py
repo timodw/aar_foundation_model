@@ -19,8 +19,8 @@ from utils import (
     prepare_dataloaders,
     setup_logging,
     save_config,
-    train_epoch,
-    validate_epoch,
+    train_classifier_epoch,
+    validate_classifier_epoch,
     get_predictions,
     patchify,
     print_label_distribution
@@ -123,12 +123,17 @@ def main(args):
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate, weight_decay=args.weight_decay)
     criterion = nn.CrossEntropyLoss()
 
-    # Training Loop
     print(f"Finetuning on fold {args.fold} of {args.data_path.name}")
+    print(f"Number of training samples: {len(X_train)}")
+    print(f"Number of validation samples: {len(X_val)}")
+    print(f"Number of classes: {n_classes}")
+    print(f"Logs and checkpoints will be saved to: {log_dir}")
+
+    # Training loop
     best_val_loss = float('inf')
     for epoch in range(args.epochs):
-        train_loss, train_acc, train_bal_acc = train_epoch(model, train_loader, optimizer, criterion, device, patchify, n_patches)
-        val_loss, val_acc, val_bal_acc = validate_epoch(model, val_loader, criterion, device, patchify, n_patches)
+        train_loss, train_acc, train_bal_acc = train_classifier_epoch(model, train_loader, optimizer, criterion, device, patchify, n_patches)
+        val_loss, val_acc, val_bal_acc = validate_classifier_epoch(model, val_loader, criterion, device, patchify, n_patches)
 
         writer.add_scalar(f'Loss/train_fold_{args.fold}', train_loss, epoch)
         writer.add_scalar(f'Accuracy/train_fold_{args.fold}', train_acc, epoch)
@@ -183,7 +188,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     
-    # Validation: ensure freeze_backbone and unlocked_layers are not both set
+    # Ensure freeze_backbone and unlocked_layers are not both set
     if args.freeze_backbone and args.unlocked_layers is not None:
         parser.error("--freeze_backbone and --unlocked_layers cannot be used simultaneously")
     

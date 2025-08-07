@@ -8,6 +8,7 @@ from sklearn.metrics import accuracy_score, balanced_accuracy_score
 import json
 from datetime import datetime
 from torch.utils.tensorboard import SummaryWriter
+import matplotlib.pyplot as plt
 from typing import Optional, Tuple, List
 from numpy.typing import NDArray
 from torch import Tensor
@@ -16,8 +17,7 @@ from torch import Tensor
 class NoamOpt:
     """
     A wrapper for an optimizer that implements the Noam learning rate schedule,
-    as described in "Attention is All You Need". This is often used for training
-    Transformers.
+    as described in "Attention is All You Need".
     """
     
     def __init__(self, d_embedding: int, factor: float, warmup: int, optimizer: torch.optim.Optimizer):
@@ -29,7 +29,7 @@ class NoamOpt:
                                Used in the learning rate calculation.
             factor (float): A scaling factor for the learning rate.
             warmup (int): The number of warmup steps for the learning rate scheduler.
-            optimizer (torch.optim.Optimizer): The optimizer to wrap (e.g., AdamW).
+            optimizer (torch.optim.Optimizer): The optimizer object to wrap.
         """
         self.d_embedding = d_embedding 
         self.factor = factor
@@ -90,10 +90,6 @@ def patchify(X: Tensor, n_patches: int) -> Tensor:
     """
     Reshapes a batch of sequences into patches.
 
-    This is a common preprocessing step for Vision Transformer-like models
-    applied to time-series data. It divides the sequence into non-overlapping
-    windows (patches).
-
     Args:
         X (Tensor): The input tensor of shape (batch_size, n_modalities,
                     sequence_length).
@@ -125,9 +121,7 @@ def unpatchify(X_patched: Tensor) -> Tensor:
 
 def get_mask(shape: Tuple[int, int, int], masking_ratio: float, device: torch.device) -> Tensor:
     """
-    Generates a random boolean mask for masked modeling, a self-supervised
-    learning technique. A certain percentage of patches (masking_ratio) are
-    selected to be masked (True).
+    Generates a random boolean mask for a sequence of patches
 
     Args:
         shape (tuple): The shape of the tensor to be masked, typically
@@ -144,7 +138,6 @@ def get_mask(shape: Tuple[int, int, int], masking_ratio: float, device: torch.de
     noise = torch.rand(shape, device=device)
     ids_shuffle = torch.argsort(noise, dim=2)
     ids_restore = torch.argsort(ids_shuffle, dim=2)
-    ids_keep = ids_shuffle[:, :, :len_keep]
     mask = torch.ones(shape, device=device)
     mask[:, :, :len_keep] = 0
     mask = torch.gather(mask, dim=2, index=ids_restore)
@@ -157,8 +150,7 @@ def subsample_per_class(X: NDArray, y: NDArray, max_samples: int, data_path: Pat
 
     To ensure reproducibility, it saves the indices of the subsampled data to a
     file. If the file already exists, it loads the indices from there instead
-    of
-    generating new ones.
+    of generating new ones.
 
     Args:
         X (NDArray): The input data features.
@@ -252,7 +244,7 @@ def prepare_dataloaders(X_train: NDArray, y_train: NDArray, X_val: NDArray, y_va
     """
     Creates PyTorch DataLoaders for training and validation sets.
 
-    It also encodes the string labels into integer format.
+    It also encodes the string labels into integer format for training.
 
     Args:
         X_train (NDArray): Training data features.
@@ -278,24 +270,32 @@ def prepare_dataloaders(X_train: NDArray, y_train: NDArray, X_val: NDArray, y_va
     return train_loader, val_loader, n_classes
 
 
-def setup_logging(output_dir: Path, data_path_name: str, fold: int) -> Tuple[SummaryWriter, Path, Path]:
+def setup_logging(output_dir: Path, data_path_name: Optional[str] = None, fold: Optional[int] = None) -> Tuple[SummaryWriter, Path, Path]:
     """
-    Sets up the logging directory for a fine-tuning experiment.
+    Sets up the logging directory for training experiments.
 
-    Creates a timestamped directory within a structure that includes the
-    dataset name and fold number.
+    Creates a timestamped directory. For fine-tuning, includes dataset name 
+    and fold number in the path structure. For pre-training, creates a simple
+    timestamped directory.
 
     Args:
         output_dir (Path): The root directory for logs.
-        data_path_name (str): The name of the dataset directory.
-        fold (int): The current fold number.
+        data_path_name (str, optional): The name of the dataset directory.
+                                        Required for fine-tuning experiments.
+        fold (int, optional): The current fold number. Required for 
+                              fine-tuning experiments.
 
     Returns:
         Tuple[SummaryWriter, Path, Path]: A tuple containing the TensorBoard
         SummaryWriter, the log directory path, and the model checkpoint path.
     """
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    log_dir = output_dir / data_path_name / f"fold_{fold}" / timestamp
+    
+    if data_path_name is not None and fold is not None:
+        log_dir = output_dir / data_path_name / f"fold_{fold}" / timestamp
+    else:
+        log_dir = output_dir / timestamp
+    
     log_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(str(log_dir))
     model_path = log_dir / "model.pt"
@@ -304,7 +304,7 @@ def setup_logging(output_dir: Path, data_path_name: str, fold: int) -> Tuple[Sum
 
 def save_config(args: argparse.Namespace, log_dir: Path):
     """
-    Saves the experiment configuration (command-line arguments) to a JSON file.
+    Saves the experiment configuration to a JSON file.
 
     Args:
         args (argparse.Namespace): The parsed command-line arguments.
@@ -315,7 +315,7 @@ def save_config(args: argparse.Namespace, log_dir: Path):
         json.dump(vars(args), f, indent=4, default=str)
 
 
-def train_epoch(model: torch.nn.Module, dataloader: DataLoader, optimizer: torch.optim.Optimizer, criterion: torch.nn.Module, device: torch.device, patchify_func: Optional[callable] = None, n_patches: Optional[int] = None) -> Tuple[float, float, float]:
+def train_classifier_epoch(model: torch.nn.Module, dataloader: DataLoader, optimizer: torch.optim.Optimizer, criterion: torch.nn.Module, device: torch.device, patchify_func: Optional[callable] = None, n_patches: Optional[int] = None) -> Tuple[float, float, float]:
     """
     Performs one epoch of training for a classification model.
 
@@ -363,7 +363,7 @@ def train_epoch(model: torch.nn.Module, dataloader: DataLoader, optimizer: torch
     return avg_loss, accuracy, balanced_accuracy
 
 
-def validate_epoch(model: torch.nn.Module, dataloader: DataLoader, criterion: torch.nn.Module, device: torch.device, patchify_func: Optional[callable] = None, n_patches: Optional[int] = None) -> Tuple[float, float, float]:
+def validate_classifier_epoch(model: torch.nn.Module, dataloader: DataLoader, criterion: torch.nn.Module, device: torch.device, patchify_func: Optional[callable] = None, n_patches: Optional[int] = None) -> Tuple[float, float, float]:
     """
     Performs one epoch of validation for a classification model.
 
@@ -423,25 +423,43 @@ def print_label_distribution(y: NDArray, dataset_name: str = "training"):
         print(f"  - {label}: {count}")
 
 
-def setup_pretrain_logging(output_dir: Path) -> Tuple[SummaryWriter, Path, Path]:
+def log_reconstruction_to_tensorboard(writer: SummaryWriter, model: torch.nn.Module, sample: Tensor, mask: Tensor, epoch: int, n_patches: int):
     """
-    Sets up the logging directory for a pre-training experiment.
-
-    Creates a simple timestamped directory for the logs.
+    Creates plots comparing original, masked input, and reconstructed signals
+    for each modality and logs them to TensorBoard.
 
     Args:
-        output_dir (Path): The root directory for logs.
-
-    Returns:
-        Tuple[SummaryWriter, Path, Path]: A tuple containing the TensorBoard
-        SummaryWriter, the log directory path, and the model checkpoint path.
+        writer (SummaryWriter): TensorBoard SummaryWriter for logging.
+        model (torch.nn.Module): The trained model for generating reconstructions.
+        sample (Tensor): Input sample tensor to visualize.
+        mask (Tensor): Boolean mask indicating which patches were masked.
+        epoch (int): Current epoch number for logging.
+        n_patches (int): Number of patches to divide sequences into.
     """
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    log_dir = output_dir / timestamp
-    log_dir.mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(str(log_dir))
-    model_path = log_dir / "model.pt"
-    return writer, log_dir, model_path
+    model.eval()
+    with torch.no_grad():
+        sample_patched = patchify(sample, n_patches)
+        sample_masked = sample_patched.clone()
+        sample_masked[mask.unsqueeze(-1).expand_as(sample_masked)] = 0
+        reconstruction_patched = model(sample_masked)
+
+        original_signal = unpatchify(sample_patched.squeeze(0))
+        masked_signal = unpatchify(sample_masked.squeeze(0))
+        reconstructed_signal = unpatchify(reconstruction_patched.squeeze(0))
+
+        fig, axes = plt.subplots(original_signal.shape[0], 1, figsize=(15, 5 * original_signal.shape[0]), sharex=True, squeeze=False)
+        axes = axes.flatten()
+        fig.suptitle(f'Epoch {epoch+1} Reconstruction')
+        for i, ax in enumerate(axes):
+            ax.plot(original_signal[i].cpu().numpy(), label='Original')
+            ax.plot(masked_signal[i].cpu().numpy(), label='Masked Input', linestyle='--')
+            ax.plot(reconstructed_signal[i].cpu().numpy(), label='Reconstruction')
+            ax.set_ylabel(f'Modality {i+1}')
+            ax.legend()
+        
+        axes[-1].set_xlabel('Time step')
+        writer.add_figure('Reconstruction', fig, global_step=epoch)
+        plt.close(fig)
 
 
 def load_pretraining_data(data_path: Path, input_mode: str) -> Tuple[NDArray, NDArray]:

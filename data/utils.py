@@ -181,7 +181,7 @@ def hdf5_to_segments(
                                 seg_data = np.concatenate(seg_data_list, axis=1)
                                 if seg_data.shape[0] < max_window_length:
                                     pad_width = ((0, max_window_length - seg_data.shape[0]), (0, 0))
-                                    seg_data = np.pad(seg_data, pad_width, mode='constant', constant_values=0.0)
+                                    seg_data = np.pad(seg_data, pad_width, mode='constant', constant_values=np.nan)
                                 
                                 seg_data = seg_data[:max_window_length, :]
                                 segments.append(seg_data)
@@ -237,7 +237,7 @@ def hdf5_to_segments(
 
                             if seg_data.shape[0] < max_window_length:
                                 pad_width = ((0, max_window_length - seg_data.shape[0]), (0, 0))
-                                seg_data = np.pad(seg_data, pad_width, mode='constant', constant_values=0.0)
+                                seg_data = np.pad(seg_data, pad_width, mode='constant', constant_values=np.nan)
                             
                             segments.append(seg_data)
                             labels.append(first_label)
